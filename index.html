@@ -181,10 +181,18 @@ let csvData=null, xlsxData=null, allCampaigns=[], selectedCampaigns=[];
 
 function loadCSV(file){
   if(!file)return;
-  Papa.parse(file,{header:true,skipEmptyLines:true,complete:res=>{
-    csvData=res.data;
+  // header:false로 파싱 후 직접 객체화 — Meta CSV의 중복 '캠페인 이름' 컬럼이
+  // Papa의 header:true 중복 처리+따옴표와 엉켜 헤더를 뭉개는 문제 회피
+  Papa.parse(file,{header:false,skipEmptyLines:true,complete:res=>{
+    var rows=res.data;
+    var hdr=(rows[0]||[]).map(function(h){return String(h).trim()});
+    csvData=rows.slice(1).map(function(arr){
+      var o={};
+      for(var i=0;i<hdr.length;i++){ o[hdr[i]]=arr[i]; } // 중복 헤더는 뒤 값 우선(build.py와 동일)
+      return o;
+    });
     document.getElementById('csvZone').classList.add('done');
-    document.getElementById('csvStatus').innerHTML='<div class="status">✓ '+file.name+' ('+res.data.length+'행)</div>';
+    document.getElementById('csvStatus').innerHTML='<div class="status">✓ '+file.name+' ('+csvData.length+'행)</div>';
     checkReady();
   }});
 }
@@ -210,18 +218,18 @@ function checkReady(){
   const COL={};
   // Map columns
   csvData.forEach(row=>{
-    Object.keys(row).forEach(k=>{
-      const kk=k.trim().toLowerCase();
-      if(kk.includes('캠페인 이름')||kk==='campaign name')COL.campaign=k;
-      if(kk.includes('광고 이름')||kk==='ad name')COL.ad=k;
-      if(kk.includes('광고 세트 이름')||kk==='ad set name')COL.adset=k;
-      if(kk.includes('보고 시작')||kk==='reporting starts')COL.date=k;
-      if(kk.includes('지출 금액'))COL.spend=k;
-      if(kk.includes('노출')||kk==='impressions')COL.impressions=k;
-      if(kk.includes('링크 클릭')||kk==='link clicks')COL.clicks=k;
-      if(kk.match(/ctr/i))COL.ctr=k;
-      if(kk.match(/cpc/i))COL.cpc=k;
-      if(kk.includes('도달')||kk==='reach')COL.reach=k;
+    Object.keys(row).forEach(function(k){
+      if(k.indexOf('캠페인')>=0&&k.indexOf('이름')>=0)COL.campaign=k;
+      if(k.indexOf('광고 이름')>=0)COL.ad=k;
+      if(k.indexOf('광고 세트 이름')>=0)COL.adset=k;
+      if(k.indexOf('보고 시작')>=0)COL.date=k;
+      if(k.indexOf('지출')>=0)COL.spend=k;
+      if(k.indexOf('링크 클릭')>=0)COL.clicks=k;
+      if(k.indexOf('도달')>=0)COL.reach=k;
+    });
+    // Impressions separately
+    Object.keys(row).forEach(function(k){
+      if(k.indexOf('노출')>=0&&k.indexOf('비용')<0&&k.indexOf('CPM')<0&&k.indexOf('cpm')<0&&k!==COL.clicks){COL.impressions=k}
     });
   });
   
@@ -258,25 +266,38 @@ function selectAllCamps(all){
 
 function num(v){if(!v||v==='-')return 0;return parseFloat(String(v).replace(/[,₩$%]/g,'').trim())||0}
 
-function getWeek(ds){const d=new Date(ds);const jan1=new Date(d.getFullYear(),0,1);const wn=Math.ceil(((d-jan1)/86400000+jan1.getDay()+1)/7);return d.getFullYear()+'-W'+(wn<10?'0':'')+wn}
-function getWeekLabel(ds){const d=new Date(ds);const day=d.getDay();const mon=new Date(d);mon.setDate(d.getDate()-(day===0?6:day-1));const sun=new Date(mon);sun.setDate(mon.getDate()+6);return (mon.getMonth()+1)+'/'+mon.getDate()+'~'+(sun.getMonth()+1)+'/'+sun.getDate()}
+function weekStart(ds){const p=ds.split('-');const d=new Date(+p[0],+p[1]-1,+p[2]);const s=new Date(d);s.setDate(d.getDate()-((d.getDay()+1)%7));return s} // 토~금 주 시작(토)
+function getWeek(ds){const s=weekStart(ds);return s.getFullYear()+'-'+('0'+(s.getMonth()+1)).slice(-2)+'-'+('0'+s.getDate()).slice(-2)}
+function getWeekLabel(ds){const s=weekStart(ds);const e=new Date(s);e.setDate(s.getDate()+6);return (s.getMonth()+1)+'/'+s.getDate()+'~'+(e.getMonth()+1)+'/'+e.getDate()}
 
 function processData(){
   // Map CSV columns
   const COL={};
-  Object.keys(csvData[0]||{}).forEach(k=>{
-    const kk=k.trim().toLowerCase();
-    if(kk.includes('캠페인 이름')||kk==='campaign name')COL.campaign=k;
-    if(kk.includes('광고 이름')||kk==='ad name')COL.ad=k;
-    if(kk.includes('광고 세트 이름')||kk==='ad set name')COL.adset=k;
-    if(kk.includes('보고 시작')||kk==='reporting starts')COL.date=k;
-    if(kk.includes('지출 금액'))COL.spend=k;
-    if(kk.includes('노출')&&!kk.includes('비용'))COL.impressions=k;
-    if(kk.includes('링크 클릭')||kk==='link clicks')COL.clicks=k;
-    if(kk.match(/ctr/i)&&!COL.ctr)COL.ctr=k;
-    if(kk.match(/cpc/i)&&!COL.cpc)COL.cpc=k;
-    if(kk.includes('도달')||kk==='reach')COL.reach=k;
+  var allKeys=Object.keys(csvData[0]||{});
+  console.log('CSV headers:',allKeys);
+  allKeys.forEach(function(k){
+    // Use indexOf for robust matching - handles BOM, whitespace, encoding
+    if(k.indexOf('캠페인')>=0&&k.indexOf('이름')>=0)COL.campaign=k;
+    if(k.indexOf('광고 이름')>=0)COL.ad=k;
+    if(k.indexOf('광고 세트 이름')>=0)COL.adset=k;
+    if(k.indexOf('보고 시작')>=0)COL.date=k;
+    if(k.indexOf('지출')>=0)COL.spend=k;
+    if(k.indexOf('도달')>=0)COL.reach=k;
+    // '링크 클릭'만 클릭 컬럼 — CTR(링크 클릭률)·CPC(링크 클릭당 비용)도 '링크 클릭'을 포함하므로 제외
+    if(k.indexOf('링크 클릭')>=0&&k.indexOf('CTR')<0&&k.indexOf('CPC')<0&&k.indexOf('률')<0&&k.indexOf('비용')<0)COL.clicks=k;
+    if(k.indexOf('CTR')>=0||k.indexOf('ctr')>=0)COL.ctr=k;
+    if((k.indexOf('CPC')>=0||k.indexOf('cpc')>=0)&&k.indexOf('CPM')<0)COL.cpc=k;
   });
+  // 노출: match column that ends with 노출 but NOT CPM/비용/도달
+  allKeys.forEach(function(k){
+    if(k.indexOf('노출')>=0&&k.indexOf('비용')<0&&k.indexOf('CPM')<0&&k.indexOf('cpm')<0&&k.indexOf('도달')<0&&k!==COL.clicks){
+      COL.impressions=k;
+    }
+  });
+  // Fallback: if impressions not found, try English
+  if(!COL.impressions)allKeys.forEach(function(k){if(k.toLowerCase()==='impressions')COL.impressions=k});
+  console.log('Final mapping:',JSON.stringify(COL));
+  console.log('Sample - impressions:',csvData[0][COL.impressions],'clicks:',csvData[0][COL.clicks],'spend:',csvData[0][COL.spend]);
 
   // Filter by selected campaigns
   const filtered=csvData.filter(row=>{
@@ -307,7 +328,7 @@ function processData(){
     const leadDate=String(row['리드 인입']||'').substring(0,10);
     if(channel.includes('쿠팡')&&utmSrc.toLowerCase().includes('meta')){
       const content=utmCont==='insight02'?'insight_02':utmCont;
-      const camp=utmSrc.includes('needs')?'니즈파악':utmSrc.includes('case')?'성공사례':'기타';
+      const camp=utmSrc.toLowerCase().includes('case')?'성공사례':'니즈파악';
       leads.push({date:leadDate,ad:content,campaign:camp});
     }
   });
@@ -341,9 +362,8 @@ function processData(){
     const d=dailyAgg[r.date];
     d.spend+=r.spend;d.impressions+=r.impressions;d.clicks+=r.clicks;d.reach+=r.reach;
   });
-  const leadByDate={};
-  leads.forEach(l=>{leadByDate[l.date]=(leadByDate[l.date]||0)+1});
-  Object.entries(leadByDate).forEach(([dt,cnt])=>{if(dailyAgg[dt])dailyAgg[dt].leads+=cnt});
+  // 지출 없이 리드만 있는 날짜도 포함 (build.py와 동일)
+  leads.forEach(l=>{if(!l.date)return;if(!dailyAgg[l.date])dailyAgg[l.date]={spend:0,impressions:0,clicks:0,reach:0,leads:0};dailyAgg[l.date].leads++;});
 
   const daily=Object.keys(dailyAgg).sort().map(dt=>{
     const d=dailyAgg[dt];
@@ -357,7 +377,7 @@ function processData(){
   const ts=adSummary.reduce((s,a)=>s+a.spend,0);
   const ti=adSummary.reduce((s,a)=>s+a.impressions,0);
   const tc=adSummary.reduce((s,a)=>s+a.clicks,0);
-  const tl=adSummary.reduce((s,a)=>s+a.leads,0);
+  const tl=leads.length;
   const totals={spend:ts,impressions:ti,clicks:tc,leads:tl,
     ctr:ti?+(tc/ti*100).toFixed(2):0,cpc:tc?Math.round(ts/tc):0,cpl:tl?Math.round(ts/tl):0};
 
@@ -378,17 +398,31 @@ function processData(){
   });
 
   // Campaigns
+  const CASE_ADS_FALLBACK=['insight_02','02_goldbox_interview','01_goldbox_case'];
+  function classifyCamp(cn,ad){cn=cn||'';if(cn.indexOf('성공사례')>=0||cn.toLowerCase().indexOf('case')>=0)return '성공사례';if(cn.indexOf('니즈')>=0||cn.toLowerCase().indexOf('needs')>=0)return '니즈파악';if(cn)return cn;return CASE_ADS_FALLBACK.indexOf(ad)>=0?'성공사례':'니즈파악';}
   const campAgg={};
   adSummary.forEach(a=>{
-    const c=a.campaign_name||'Unknown';
+    const c=classifyCamp(a.campaign_name,a.ad);
     if(!campAgg[c])campAgg[c]={spend:0,impressions:0,clicks:0,leads:0};
-    campAgg[c].spend+=a.spend;campAgg[c].impressions+=a.impressions;campAgg[c].clicks+=a.clicks;campAgg[c].leads+=a.leads;
+    campAgg[c].spend+=a.spend;campAgg[c].impressions+=a.impressions;campAgg[c].clicks+=a.clicks;
   });
+  // 리드는 utm_source 기준으로 귀속
+  leads.forEach(l=>{if(!campAgg[l.campaign])campAgg[l.campaign]={spend:0,impressions:0,clicks:0,leads:0};campAgg[l.campaign].leads++;});
   const campaigns=Object.entries(campAgg).map(([name,d])=>({
     campaign:name,spend:d.spend,impressions:d.impressions,clicks:d.clicks,leads:d.leads,
     ctr:d.impressions?+(d.clicks/d.impressions*100).toFixed(2):0,
     cpc:d.clicks?Math.round(d.spend/d.clicks):0,
     cpl:d.leads?Math.round(d.spend/d.leads):0}));
+
+  // Campaign x Weekly (캠페인별 주간)
+  const adCat={};
+  adSummary.forEach(a=>{adCat[a.ad]=classifyCamp(a.campaign_name,a.ad)});
+  const cwAgg={};
+  function cwCell(cat,wk){if(!cwAgg[cat])cwAgg[cat]={};if(!cwAgg[cat][wk])cwAgg[cat][wk]={spend:0,impressions:0,clicks:0,reach:0,leads:0};return cwAgg[cat][wk]}
+  adDaily.forEach(r=>{if(!r.date||!r.ad)return;const c=cwCell(adCat[r.ad]||'Unknown',getWeek(r.date));c.spend+=r.spend;c.impressions+=r.impressions;c.clicks+=r.clicks;c.reach+=r.reach});
+  leads.forEach(l=>{if(!l.date)return;cwCell(l.campaign,getWeek(l.date)).leads++});
+  const campaign_weekly={};
+  Object.keys(cwAgg).forEach(cat=>{campaign_weekly[cat]={};Object.keys(cwAgg[cat]).forEach(wk=>{const c=cwAgg[cat][wk];campaign_weekly[cat][wk]={spend:Math.round(c.spend),impressions:c.impressions,clicks:c.clicks,reach:c.reach,leads:c.leads,ctr:c.impressions?+(c.clicks/c.impressions*100).toFixed(2):0,cpc:c.clicks?Math.round(c.spend/c.clicks):0,cpl:c.leads?Math.round(c.spend/c.leads):0}})});
 
   const dates=daily.map(d=>d.date);
   const period=dates.length?dates[0]+' ~ '+dates[dates.length-1]:'';
@@ -404,7 +438,8 @@ function processData(){
     wow.leads_diff=curr.leads-prev.leads;
   }
 
-  return {totals,ad_summary:adSummary,daily,weekly,monthly,campaigns,wow,period};
+  return {totals,ad_summary:adSummary,daily,weekly,monthly,campaigns,campaign_weekly,wow,period,
+    ad_daily_raw:adDaily, leads_raw:leads.map(l=>({date:l.date,ad:l.ad,campaign:l.campaign}))};
 }
 
 function showTab(id,el){
@@ -418,167 +453,254 @@ let allCharts=[];
 function destroyCharts(){allCharts.forEach(c=>{try{c.destroy()}catch(e){}});allCharts=[]}
 function makeChart(id,cfg){const c=new Chart(document.getElementById(id),cfg);allCharts.push(c);return c}
 
-function startDashboard(){
-  if(selectedCampaigns.length===0){alert('캠페인을 1개 이상 선택하세요');return}
-  const D=processData();
-  destroyCharts();
-  
-  // Show dashboard
+function startDashboardWithData(D){
   document.getElementById('uploadPage').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
-  document.getElementById('headerRight').innerHTML=
-    '<span style="font-size:13px;color:var(--ts);font-weight:500">'+D.period+'</span>'+
-    '<button class="btn-outline" style="font-size:11px;padding:5px 14px" onclick="resetDashboard()">새 데이터</button>';
+  selectedCampaigns=['all'];
+  renderDashboard(D);
+}
+function startDashboard(){
+  if(selectedCampaigns.length===0){alert('캠페인을 1개 이상 선택하세요');return}
+  var D=processData();
+  renderDashboard(D);
+}
+function renderDashboard(D){
+  destroyCharts();
+  document.getElementById('uploadPage').classList.add('hidden');
+  document.getElementById('dashboard').classList.remove('hidden');
+  document.getElementById('headerRight').innerHTML='<span style="font-size:13px;color:var(--ts);font-weight:500">'+D.period+'</span><button class="btn-outline" style="font-size:11px;padding:5px 14px;margin-left:8px" onclick="resetDashboard()">새 데이터</button>';
 
-  const T=D.totals,W=D.wow||{};
-  const active=D.ad_summary.filter(a=>a.spend>0).length;
-  
-  function wt(val,unit,inv){if(!val&&val!==0)return'';const cls=(inv?(val<0):(val>0))?'up':'down';return' <span class="wow '+cls+'">전주 '+(val>0?'▲':'▼')+Math.abs(val)+unit+'</span>'}
+  var T=D.totals,W=D.wow||{};
+  var active=D.ad_summary.filter(function(a){return a.spend>0}).length;
+  function wt(val,unit,inv){if(!val&&val!==0)return'';var cls=(inv?(val<0):(val>0))?'up':'down';return' <span class="wow '+cls+'">전주 '+(val>0?'▲':'▼')+Math.abs(val)+unit+'</span>'}
+
+  // CARDS
+  var cardData=[['총 지출',f(T.spend,'w'),active+'개 소재'+wt(W.spend_pct,'%',true)],['CTR',f(T.ctr,'p'),'클릭 '+f(T.clicks)+wt(W.ctr_pp,'%p',false)],['CPC',f(T.cpc,'w'),'노출 '+f(T.impressions)+wt(W.cpc_won,'원',true)],['리드 인입',T.leads+'건','CPL '+f(T.cpl,'w')+wt(W.leads_diff,'건',false)]];
+  var cardsH='';for(var ci=0;ci<cardData.length;ci++){var cd=cardData[ci];cardsH+='<div class="card"><div class="card-label">'+cd[0]+'</div><div class="card-value">'+cd[1]+'</div><div class="card-sub">'+cd[2]+'</div></div>'}
 
   // OVERVIEW
-  document.getElementById('tab-overview').innerHTML=`
-    <div class="cards">${[
-      ['총 지출',f(T.spend,'w'),active+'개 소재'+wt(W.spend_pct,'%',true)],
-      ['CTR',f(T.ctr,'p'),'클릭 '+f(T.clicks)+wt(W.ctr_pp,'%p',false)],
-      ['CPC',f(T.cpc,'w'),'노출 '+f(T.impressions)+wt(W.cpc_won,'원',true)],
-      ['리드 인입',T.leads+'건','CPL '+f(T.cpl,'w')+wt(W.leads_diff,'건',false)]
-    ].map(c=>'<div class="card"><div class="card-label">'+c[0]+'</div><div class="card-value">'+c[1]+'</div><div class="card-sub">'+c[2]+'</div></div>').join('')}</div>
-    <div class="cbox"><div class="ch"><div><div class="ct">커스텀 지표 비교</div><div class="cd">지표 클릭 선택 (최대 2개)</div></div>
-    <div class="period-btns"><button class="pbtn" onclick="setCuP('daily',this)">일별</button><button class="pbtn active" onclick="setCuP('weekly',this)">주간</button><button class="pbtn" onclick="setCuP('monthly',this)">월별</button></div></div>
-    <div class="chips" id="mChips"></div><canvas id="cuChart" style="margin-top:14px"></canvas></div>
-    <div class="cbox"><div class="ch"><div><div class="ct">리드 인입 & CPL 추이</div><div class="cd">막대: 리드(건) / 선: CPL(₩)</div></div>
-    <div class="ctrl-row"><label class="toggle"><input type="checkbox" id="lblTgl" checked onchange="buildTr(curTrM)">숫자 표시</label>
-    <div class="period-btns"><button class="pbtn" onclick="setTr('daily',this)">일별</button><button class="pbtn active" onclick="setTr('weekly',this)">주간</button><button class="pbtn" onclick="setTr('monthly',this)">월별</button></div></div></div>
-    <canvas id="trChart"></canvas></div>
-    <div class="cbox"><div class="ct">소재별 CPL & 리드 수</div><div class="cd">낮을수록 효율적 · 막대 끝: 리드 수</div><canvas id="cplChart"></canvas></div>
-    <div class="cbox"><div class="ct">소재별 CTR & CPC</div><canvas id="ctrCpcChart"></canvas></div>`;
+  document.getElementById('tab-overview').innerHTML='<div class="cards">'+cardsH+'</div>'+
+    '<div class="cbox"><div class="ch"><div><div class="ct">커스텀 지표 비교</div><div class="cd">지표 클릭 선택 (최대 2개)</div></div><div class="period-btns"><button class="pbtn" onclick="setCuP(\'daily\',this)">일별</button><button class="pbtn active" onclick="setCuP(\'weekly\',this)">주간</button><button class="pbtn" onclick="setCuP(\'monthly\',this)">월별</button></div></div><div class="chips" id="mChips"></div><canvas id="cuChart" style="margin-top:14px"></canvas></div>'+
+    '<div class="cbox"><div class="ch"><div><div class="ct">리드 인입 &amp; CPL 추이</div><div class="cd">막대: 리드(건) / 선: CPL(₩)</div></div><div class="ctrl-row"><label class="toggle"><input type="checkbox" id="lblTgl" checked onchange="buildTr(curTrM)">숫자 표시</label><div class="period-btns"><button class="pbtn" onclick="setTr(\'daily\',this)">일별</button><button class="pbtn active" onclick="setTr(\'weekly\',this)">주간</button><button class="pbtn" onclick="setTr(\'monthly\',this)">월별</button></div></div></div><canvas id="trChart"></canvas></div>'+
+    '<div class="cbox"><div class="ct">소재별 CPL &amp; 리드 수</div><div class="cd">낮을수록 효율적 · 막대 끝: 리드 수</div><canvas id="cplChart"></canvas></div>'+
+    '<div class="cbox"><div class="ct">소재별 CTR &amp; CPC</div><canvas id="ctrCpcChart"></canvas></div>';
 
   // CREATIVE
-  document.getElementById('tab-creative').innerHTML=`
-    <div class="cbox"><div class="ct">소재별 성과 상세</div><div class="cd">헤더 클릭 시 정렬</div>
-    <div style="overflow-x:auto"><table id="adTbl"><thead><tr>
-    <th class="text-l" data-key="ad">소재</th><th class="text-r" data-key="spend">지출</th>
-    <th class="text-r" data-key="impressions">노출</th><th class="text-r" data-key="clicks">클릭</th>
-    <th class="text-r" data-key="ctr">CTR</th><th class="text-r" data-key="cpc">CPC</th>
-    <th class="text-r hl" data-key="leads">리드 인입</th><th class="text-r hl" data-key="cpl">CPL</th>
-    </tr></thead><tbody id="atb"></tbody></table></div></div>
-    <div class="cbox"><div class="ct">소재별 효율 매트릭스</div>
-    <div class="cd">좌상단 = 낮은 CPL + 높은 CTR = 효율 최고 · 버블 크기 = 리드 수</div>
-    <canvas id="scChart"></canvas></div>`;
+  document.getElementById('tab-creative').innerHTML=
+    '<div class="cbox"><div class="ct">소재별 성과 상세</div><div class="cd">헤더 클릭 시 정렬</div><div style="overflow-x:auto"><table id="adTbl"><thead><tr><th class="text-l" data-key="ad">소재</th><th class="text-r" data-key="spend">지출</th><th class="text-r" data-key="impressions">노출</th><th class="text-r" data-key="clicks">클릭</th><th class="text-r" data-key="ctr">CTR</th><th class="text-r" data-key="cpc">CPC</th><th class="text-r hl" data-key="leads">리드 인입</th><th class="text-r hl" data-key="cpl">CPL</th></tr></thead><tbody id="atb"></tbody></table></div></div>'+
+    '<div class="cbox"><div class="ct">소재별 효율 매트릭스</div><div class="cd">좌상단 = 낮은 CPL + 높은 CTR = 효율 최고 · 버블 크기 = 리드 수</div><canvas id="scChart"></canvas></div>';
 
   // CAMPAIGN
-  const camps=D.campaigns;
-  document.getElementById('tab-campaign').innerHTML=`
-    <div class="cards">${camps.map((c,i)=>'<div class="card" style="border-left:3px solid '+campC[i%4]+'"><div class="card-label">'+c.campaign+'</div><div class="card-value">CTR '+f(c.ctr,'p')+'</div><div class="card-sub">CPL '+f(c.cpl,'w')+'</div></div>').join('')}</div>
-    <div class="two-col">
-    <div class="cbox"><div class="ct">캠페인별 CTR</div><canvas id="campCtr"></canvas></div>
-    <div class="cbox"><div class="ct">캠페인별 CPC</div><canvas id="campCpc"></canvas></div></div>
-    <div class="two-col">
-    <div class="cbox"><div class="ct">캠페인별 리드</div><canvas id="campLead"></canvas></div>
-    <div class="cbox"><div class="ct">캠페인별 CPL</div><canvas id="campCpl"></canvas></div></div>
-    <div class="cbox"><div class="ct">캠페인별 성과 테이블</div><div style="overflow-x:auto"><table><thead><tr>
-    <th class="text-l">캠페인</th><th class="text-r">지출</th><th class="text-r">노출</th><th class="text-r">클릭</th>
-    <th class="text-r">CTR</th><th class="text-r">CPC</th><th class="text-r hl">리드</th><th class="text-r hl">CPL</th>
-    </tr></thead><tbody>${camps.map(c=>'<tr><td class="text-l" style="font-weight:500;color:var(--text)">'+c.campaign+'</td><td class="text-r">'+f(c.spend,'w')+'</td><td class="text-r">'+f(c.impressions)+'</td><td class="text-r">'+f(c.clicks)+'</td><td class="text-r">'+f(c.ctr,'p')+'</td><td class="text-r">'+f(c.cpc,'w')+'</td><td class="text-r hl">'+c.leads+'</td><td class="text-r hl">'+f(c.cpl,'w')+'</td></tr>').join('')}</tbody></table></div></div>`;
+  var camps=D.campaigns;
+  var ccH='';for(var ki=0;ki<camps.length;ki++){var ck=camps[ki];ccH+='<div class="card" style="border-left:3px solid '+campC[ki%4]+'"><div class="card-label">'+ck.campaign+'</div><div class="card-value">CTR '+f(ck.ctr,'p')+'</div><div class="card-sub">CPL '+f(ck.cpl,'w')+'</div></div>'}
+  var ctbH='';for(var ki=0;ki<camps.length;ki++){var ck=camps[ki];ctbH+='<tr><td class="text-l" style="font-weight:500;color:var(--text)">'+ck.campaign+'</td><td class="text-r">'+f(ck.spend,'w')+'</td><td class="text-r">'+f(ck.impressions)+'</td><td class="text-r">'+f(ck.clicks)+'</td><td class="text-r">'+f(ck.ctr,'p')+'</td><td class="text-r">'+f(ck.cpc,'w')+'</td><td class="text-r hl">'+ck.leads+'</td><td class="text-r hl">'+f(ck.cpl,'w')+'</td></tr>'}
+
+  document.getElementById('tab-campaign').innerHTML='<div class="cards">'+ccH+'</div>'+
+    '<div class="cbox"><div class="ch"><div><div class="ct">캠페인별 커스텀 비교</div><div class="cd">지표를 선택해서 캠페인 간 비교</div></div></div><div class="chips" id="campChips2"></div><canvas id="campCuChart2" style="margin-top:14px"></canvas></div>'+
+    '<div class="two-col"><div class="cbox"><div class="ct">캠페인별 주간 CTR</div><div class="cd">주차별 추이 · 캠페인 비교</div><canvas id="campCtr"></canvas></div><div class="cbox"><div class="ct">캠페인별 주간 CPC</div><div class="cd">주차별 추이 · 캠페인 비교</div><canvas id="campCpc"></canvas></div></div>'+
+    '<div class="two-col"><div class="cbox"><div class="ct">캠페인별 주간 리드</div><div class="cd">주차별 추이 · 캠페인 비교</div><canvas id="campLead"></canvas></div><div class="cbox"><div class="ct">캠페인별 주간 CPL</div><div class="cd">주차별 추이 · 캠페인 비교</div><canvas id="campCpl"></canvas></div></div>'+
+    '<div class="cbox"><div class="ct">캠페인별 성과 테이블</div><div style="overflow-x:auto"><table><thead><tr><th class="text-l">캠페인</th><th class="text-r">지출</th><th class="text-r">노출</th><th class="text-r">클릭</th><th class="text-r">CTR</th><th class="text-r">CPC</th><th class="text-r hl">리드</th><th class="text-r hl">CPL</th></tr></thead><tbody>'+ctbH+'</tbody></table></div></div>'+
+    '<div id="campWeekTables"></div>';
 
   // INSIGHT
-  document.getElementById('tab-insight').innerHTML=`
-    <div class="cbox" style="border-left:3px solid var(--blue)"><div class="ct">📊 성과 요약</div><div class="insight-content" style="margin-top:8px">
-    <p>총 ${active}개 소재에 ₩${T.spend.toLocaleString()} 집행, ${T.leads}건 리드 확보. CTR ${T.ctr}%, CPC ₩${T.cpc.toLocaleString()}, CPL ₩${T.cpl.toLocaleString()}.</p></div></div>
-    <div class="cbox" style="border-left:3px solid var(--orange)"><div class="ct">🏆 Top/Bottom 소재</div><div class="insight-content" style="margin-top:8px">
-    ${(()=>{const wl=D.ad_summary.filter(a=>a.leads>0).sort((a,b)=>a.cpl-b.cpl);const best=wl[0];const worst=wl[wl.length-1];return best?'<p>효율 최고: <b>'+best.ad+'</b> (CPL ₩'+best.cpl.toLocaleString()+', '+best.leads+'건)</p><p>효율 최저: <b>'+worst.ad+'</b> (CPL ₩'+worst.cpl.toLocaleString()+', '+worst.leads+'건)</p>':'<p>리드 데이터 없음</p>'})()}</div></div>
-    <div class="cbox" style="border-left:3px solid var(--green)"><div class="ct">💡 액션 아이템</div><div class="insight-content" style="margin-top:8px">
-    ${(()=>{const wl=D.ad_summary.filter(a=>a.leads>0).sort((a,b)=>a.cpl-b.cpl);const best=wl[0];const worst=wl[wl.length-1];return best&&worst?'<p>'+worst.ad+' 예산을 '+best.ad+'로 재배분 검토</p><p>CPL ₩'+(best.cpl/10000).toFixed(0)+'만 이하 소재 스케일업 우선</p>':'<p>데이터 축적 후 분석</p>'})()}</div></div>`;
+  var wl=D.ad_summary.filter(function(a){return a.leads>0}).sort(function(a,b){return a.cpl-b.cpl});
+  var best3=wl.slice(0,3);var worst3=wl.slice(-3).reverse();
+  var campStr='';for(var ki=0;ki<D.campaigns.length;ki++){var ck=D.campaigns[ki];campStr+=(ki>0?'<br>':'')+ck.campaign+': 지출 ₩'+ck.spend.toLocaleString()+', '+ck.leads+'건 리드, CPL ₩'+ck.cpl.toLocaleString()}
+  var b3H='';for(var ki=0;ki<best3.length;ki++){var a=best3[ki];b3H+='<p>'+(ki+1)+'. <b>'+a.ad+'</b>: CPL ₩'+a.cpl.toLocaleString()+' ('+a.leads+'건, 지출 ₩'+a.spend.toLocaleString()+')</p>'}
+  var w3H='';for(var ki=0;ki<worst3.length;ki++){var a=worst3[ki];w3H+='<p>'+(ki+1)+'. <b>'+a.ad+'</b>: CPL ₩'+a.cpl.toLocaleString()+' ('+a.leads+'건, 지출 ₩'+a.spend.toLocaleString()+')</p>'}
+  var zeroAds=D.ad_summary.filter(function(a){return a.spend>0&&a.leads===0});
+  var zH=zeroAds.length?'<p>• 지출이 있으나 리드 0건: '+zeroAds.map(function(a){return a.ad}).join(', ')+'</p>':'';
+  var wW=worst3.length?'<p>• '+worst3[0].ad+': 전체 지출의 '+Math.round(worst3[0].spend/T.spend*100)+'%를 차지하지만 CPL 최고 비효율</p>':'';
+  var reB=worst3.length&&best3.length?'<p>• '+worst3[0].ad+' 예산을 축소하고 '+best3[0].ad+'로 재배분 검토</p><p>• CPL ₩'+Math.round(best3[0].cpl/10000)+'만 이하 소재 스케일업 검토</p>':'';
+  var topN=best3.map(function(a){return a.ad}).join(', ');
 
-  // BUILD CHARTS
-  const gS=m=>m==='daily'?D.daily:m==='weekly'?D.weekly:D.monthly;
-  const gL=m=>m==='daily'?D.daily.map(d=>d.date.slice(5)):m==='weekly'?D.weekly.map(w=>w.label):D.monthly.map(x=>x.month);
+  // === 주간 성과 요약 (금요일 리뷰 · 이번주 vs 전주 동기간, WTD) ===
+  var wowH='';
+  (function(){
+    var raw=D.ad_daily_raw||[], lraw=D.leads_raw||[];
+    var allD=raw.map(function(r){return r.date}).concat(lraw.map(function(l){return l.date})).filter(Boolean);
+    if(allD.length<2)return;
+    function pYMD(s){var p=s.split('-');return new Date(+p[0],+p[1]-1,+p[2])}
+    function mmdd(dt){return (dt.getMonth()+1)+'/'+dt.getDate()}
+    var maxStr=allD.slice().sort()[allD.length-1];
+    var last=pYMD(maxStr), off=(last.getDay()+1)%7; // 토=0 (토~금 주, 금요일 리뷰 기준)
+    var curMon=new Date(last); curMon.setDate(last.getDate()-off);      // 이번 주 시작(토)
+    var prevMon=new Date(curMon); prevMon.setDate(curMon.getDate()-7);  // 전주 시작(토)
+    var prevEnd=new Date(last); prevEnd.setDate(last.getDate()-7);      // 전주 동일 요일
+    var firstStr=allD.slice().sort()[0];
+    function inR(ds,a,b){var t=pYMD(ds).getTime();return t>=a.getTime()&&t<=b.getTime()}
+    function clc(cn,ad){cn=cn||'';if(cn.indexOf('성공사례')>=0||cn.toLowerCase().indexOf('case')>=0)return '성공사례';if(cn.indexOf('니즈')>=0||cn.toLowerCase().indexOf('needs')>=0)return '니즈파악';return cn||'기타'}
+    function agg(a,b){
+      var o={spend:0,impressions:0,clicks:0,reach:0,leads:0,camp:{}};
+      raw.forEach(function(r){if(!r.date||!inR(r.date,a,b))return;o.spend+=r.spend||0;o.impressions+=r.impressions||0;o.clicks+=r.clicks||0;o.reach+=r.reach||0;var c=clc(r.campaign,r.ad);(o.camp[c]=o.camp[c]||{spend:0,leads:0}).spend+=r.spend||0});
+      lraw.forEach(function(l){if(!l.date||!inR(l.date,a,b))return;o.leads++;(o.camp[l.campaign]=o.camp[l.campaign]||{spend:0,leads:0}).leads++});
+      o.ctr=o.impressions?+(o.clicks/o.impressions*100).toFixed(2):0;
+      o.cpc=o.clicks?Math.round(o.spend/o.clicks):0;
+      o.cpl=o.leads?Math.round(o.spend/o.leads):0;
+      return o;
+    }
+    var cur=agg(curMon,last), prev=agg(prevMon,prevEnd);
+    var dayN=off+1, curLabel=mmdd(curMon)+'~'+mmdd(last), prevLabel=mmdd(prevMon)+'~'+mmdd(prevEnd);
+    var noPrev=(pYMD(firstStr).getTime()>prevMon.getTime()); // 전주 동기간 데이터 일부/전부 없음
+    function col(good){return good?'#059669':'#DC2626'}
+    var defs=[['지출','spend','w','neu'],['노출','impressions','n','up'],['클릭','clicks','n','up'],['CTR','ctr','p','up'],['CPC','cpc','w','down'],['리드','leads','cnt','up'],['CPL','cpl','w','down']];
+    var tRows='';
+    defs.forEach(function(d){
+      var k=d[1],typ=d[2],dir=d[3],c=cur[k]||0,p=prev[k]||0;
+      var cf,pf; if(typ==='w'){cf=f(c,'w');pf=f(p,'w')}else if(typ==='p'){cf=f(c,'p');pf=f(p,'p')}else if(typ==='cnt'){cf=c+'건';pf=p+'건'}else{cf=f(c);pf=f(p)}
+      var dtxt,dcol;
+      if(typ==='p'){var pp=Math.round((c-p)*100)/100;dtxt=pp===0?'—':(pp>0?'▲':'▼')+Math.abs(pp)+'%p';dcol=pp===0?'var(--ts)':col(dir==='up'?pp>0:pp<0)}
+      else if(typ==='cnt'){var dd=c-p;dtxt=dd===0?'—':(dd>0?'▲':'▼')+Math.abs(dd)+'건';dcol=dd===0?'var(--ts)':col(dir==='up'?dd>0:dd<0)}
+      else{var v=p?Math.round((c-p)/p*1000)/10:(c?null:0);dtxt=(v===null)?'신규':v===0?'—':(v>0?'▲':'▼')+Math.abs(v)+'%';dcol=(dir==='neu'||v===0||v===null)?'var(--ts)':col(dir==='up'?v>0:v<0)}
+      tRows+='<tr><td class="text-l">'+d[0]+'</td><td class="text-r">'+pf+'</td><td class="text-r hl">'+cf+'</td><td class="text-r" style="color:'+dcol+';font-weight:600">'+dtxt+'</td></tr>';
+    });
+    var leadsDiff=cur.leads-prev.leads;
+    var cplV=prev.cpl&&cur.cpl?Math.round((cur.cpl-prev.cpl)/prev.cpl*100):null;
+    var spendV=prev.spend?Math.round((cur.spend-prev.spend)/prev.spend*100):0;
+    var parts=[];
+    parts.push('리드 '+prev.leads+' → <b>'+cur.leads+'건</b> ('+(leadsDiff>=0?'+':'')+leadsDiff+'건)');
+    parts.push('CPL '+f(prev.cpl,'w')+' → <b>'+f(cur.cpl,'w')+'</b>'+(cplV!==null?' ('+(cplV>0?'+':'')+cplV+'%)':''));
+    parts.push('CTR '+f(prev.ctr,'p')+' → '+f(cur.ctr,'p'));
+    parts.push('지출 '+f(prev.spend,'w')+' → '+f(cur.spend,'w')+' ('+(spendV>0?'+':'')+spendV+'%)');
+    var verdict=(leadsDiff>0&&(!prev.cpl||cur.cpl<=prev.cpl))?'📈 리드 증가 + CPL 개선 → <b>이번주 효율이 좋습니다.</b>':(leadsDiff<0&&cur.cpl>prev.cpl)?'📉 리드 감소 + CPL 상승 → <b>효율 점검이 필요합니다.</b>':'➡️ 혼조 — 리드와 CPL 방향이 엇갈립니다.';
+    var narr='<p>이번주(<b>'+curLabel+'</b>, 토~현재 '+dayN+'일)는 전주 같은 기간(<b>'+prevLabel+'</b>) 대비 '+parts.join(', ')+'.</p><p style="margin-top:6px">'+verdict+'</p>';
+    var cwp=D.campaigns.map(function(c){var cl=(cur.camp[c.campaign]||{}).leads||0,pl=(prev.camp[c.campaign]||{}).leads||0,dd=cl-pl;return c.campaign+' '+pl+'→'+cl+'건('+(dd>=0?'+':'')+dd+')'});
+    var campWow='<p style="margin-top:6px"><b>캠페인별 리드:</b> '+cwp.join(' · ')+'</p>';
+    var guide='<p style="margin-top:6px;color:var(--ts);font-size:12px">📌 매주 <b>금요일</b> 리뷰 기준(주 = 토~금) · 이번주 토~현재('+dayN+'일)와 전주 같은 요일수를 공정 비교합니다.'+(noPrev?'<br>⚠️ 전주 동기간 데이터가 일부 부족해 비교가 정확하지 않을 수 있습니다.':'')+'</p>';
+    wowH='<div class="cbox" style="border-left:3px solid var(--blue)"><div class="ct">📅 주간 성과 요약 (이번주 vs 전주 동기간)</div><div class="insight-content" style="margin-top:8px">'+narr+campWow+guide+'<div style="overflow-x:auto;margin-top:10px"><table><thead><tr><th class="text-l">지표</th><th class="text-r">전주<br>'+prevLabel+'</th><th class="text-r">이번주<br>'+curLabel+'</th><th class="text-r">증감</th></tr></thead><tbody>'+tRows+'</tbody></table></div></div></div>';
+  })();
+
+  document.getElementById('tab-insight').innerHTML=wowH+
+    '<div class="cbox" style="border-left:3px solid var(--blue)"><div class="ct">📊 성과 요약</div><div class="insight-content" style="margin-top:8px"><p>총 '+active+'개 소재에 ₩'+T.spend.toLocaleString()+' 집행하여 '+T.leads+'건의 실제 리드를 확보했습니다.</p><p>전체 CTR '+T.ctr+'%, CPC ₩'+T.cpc.toLocaleString()+', CPL ₩'+T.cpl.toLocaleString()+'</p><p><br><b>캠페인별 현황:</b><br>'+campStr+'</p></div></div>'+
+    '<div class="cbox" style="border-left:3px solid var(--orange)"><div class="ct">🏆 Top/Bottom 소재 분석</div><div class="insight-content" style="margin-top:8px"><p><b>효율 최고 소재 (CPL 기준):</b></p>'+b3H+'<br><p><b>효율 최저 소재:</b></p>'+w3H+'</div></div>'+
+    '<div class="cbox" style="border-left:3px solid var(--green)"><div class="ct">💡 개선 액션 아이템</div><div class="insight-content" style="margin-top:8px"><p><b>예산 재배분:</b></p>'+reB+'<br><p><b>소재 최적화:</b></p><p>• Top 소재('+topN+')의 크리에이티브 요소를 신규 소재에 적용 테스트</p><p>• 리드 0건 소재는 2주 내 개선 없으면 off 검토</p></div></div>'+
+    '<div class="cbox" style="border-left:3px solid var(--red)"><div class="ct">⚠️ 주의 신호</div><div class="insight-content" style="margin-top:8px">'+zH+wW+'<p>• 소재별 피로도 모니터링 필요: CTR 하락 추세 소재 교체 검토</p></div></div>';
+
+  // === CHARTS ===
+  var gS=function(m){return m==='daily'?D.daily:m==='weekly'?D.weekly:D.monthly};
+  var gL=function(m){return m==='daily'?D.daily.map(function(d){return d.date.slice(5)}):m==='weekly'?D.weekly.map(function(w){return w.label}):D.monthly.map(function(x){return x.month})};
 
   // Custom chart
-  let selM=['spend','leads'],cuP='weekly',cuCh;
-  function renderChips(){document.getElementById('mChips').innerHTML=['spend','impressions','clicks','leads','ctr','cpc','cpl'].map(k=>'<div class="chip'+(selM.includes(k)?' sel':'')+'" onclick="window._togM(\''+k+'\')">'+MET[k].l+'</div>').join('')}
-  window._togM=k=>{if(selM.includes(k))selM=selM.filter(x=>x!==k);else{if(selM.length>=2)selM.shift();selM.push(k)};renderChips();buildCu()};
+  var selM=['spend','leads'],cuP='weekly',cuCh;
+  function renderChips(){document.getElementById('mChips').innerHTML=['spend','impressions','clicks','leads','ctr','cpc','cpl'].map(function(k){return '<div class="chip'+(selM.indexOf(k)>=0?' sel':'')+'" onclick="window._togM(\''+k+'\')">'+MET[k].l+'</div>'}).join('')}
+  window._togM=function(k){if(selM.indexOf(k)>=0)selM=selM.filter(function(x){return x!==k});else{if(selM.length>=2)selM.shift();selM.push(k)};renderChips();buildCu()};
   function buildCu(){
-    if(!selM.length)return;const s=gS(cuP),lb=gL(cuP);if(cuCh)try{cuCh.destroy()}catch(e){}
-    const ds=selM.map((k,i)=>{const m=MET[k];
-      return i===0?{label:m.l,data:s.map(d=>d[k]||0),backgroundColor:m.c+'55',borderColor:m.c,borderWidth:1,borderRadius:4,yAxisID:'y',order:2,dlFmt:m.f,dlColor:m.c}
-      :{label:m.l,data:s.map(d=>d[k]||0),type:'line',borderColor:m.c,borderWidth:2,pointRadius:4,pointBackgroundColor:m.c,yAxisID:'y1',order:1,tension:.3,dlFmt:m.f,dlColor:m.c}
+    if(!selM.length)return;var s=gS(cuP),lb=gL(cuP);if(cuCh)try{cuCh.destroy()}catch(e){}
+    var ds=selM.map(function(k,i){var m=MET[k];
+      return i===0?{label:m.l,data:s.map(function(d){return d[k]||0}),backgroundColor:m.c+'55',borderColor:m.c,borderWidth:1,borderRadius:4,yAxisID:'y',order:2,dlFmt:m.f,dlColor:m.c}
+      :{label:m.l,data:s.map(function(d){return d[k]||0}),type:'line',borderColor:m.c,borderWidth:2,pointRadius:4,pointBackgroundColor:m.c,yAxisID:'y1',order:1,tension:.3,dlFmt:m.f,dlColor:m.c}
     });
-    const m1=MET[selM[0]],m2=selM[1]?MET[selM[1]]:null;
-    const sc={y:{position:'left',title:{display:true,text:m1.l,color:m1.c,font:{size:10}},ticks:{callback:v=>m1.f(v),color:m1.c,font:{size:10}},grid:{color:gridC}},x:{ticks:{color:tickC,font:{size:10},maxRotation:45}}};
-    if(m2)sc.y1={position:'right',title:{display:true,text:m2.l,color:m2.c,font:{size:10}},ticks:{callback:v=>m2.f(v),color:m2.c,font:{size:10}},grid:{display:false}};
+    var m1=MET[selM[0]],m2=selM[1]?MET[selM[1]]:null;
+    var sc={y:{position:'left',title:{display:true,text:m1.l,color:m1.c,font:{size:10}},ticks:{callback:function(v){return m1.f(v)},color:m1.c,font:{size:10}},grid:{color:gridC}},x:{ticks:{color:tickC,font:{size:10},maxRotation:45}}};
+    if(m2)sc.y1={position:'right',title:{display:true,text:m2.l,color:m2.c,font:{size:10}},ticks:{callback:function(v){return m2.f(v)},color:m2.c,font:{size:10}},grid:{display:false}};
     cuCh=makeChart('cuChart',{type:'bar',data:{labels:lb,datasets:ds},options:{responsive:true,interaction:{mode:'index',intersect:false},scales:sc,plugins:{legend:{labels:{color:'#6B7280',font:{size:11}}}}}});
   }
-  window.setCuP=(m,el)=>{el.parentElement.querySelectorAll('.pbtn').forEach(e=>e.classList.remove('active'));el.classList.add('active');cuP=m;buildCu()};
+  window.setCuP=function(m,el){el.parentElement.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('active')});el.classList.add('active');cuP=m;buildCu()};
   renderChips();buildCu();
 
   // Trend
-  let trCh;window.curTrM='weekly';
-  window.buildTr=mode=>{
-    window.curTrM=mode;const s=gS(mode),lb=gL(mode),show=document.getElementById('lblTgl')?.checked;
+  var trCh;window.curTrM='weekly';
+  window.buildTr=function(mode){
+    window.curTrM=mode;var s=gS(mode),lb=gL(mode),show=document.getElementById('lblTgl')&&document.getElementById('lblTgl').checked;
     if(trCh)try{trCh.destroy()}catch(e){}
     trCh=makeChart('trChart',{type:'bar',data:{labels:lb,datasets:[
-      {label:'리드 인입',data:s.map(d=>d.leads||0),backgroundColor:'#2466FF88',borderRadius:4,yAxisID:'y',order:2,dlFmt:v=>v+'건',dlColor:'#2466FF'},
-      {label:'CPL',data:s.map(d=>d.leads>0?d.cpl:null),type:'line',borderColor:'#7C3AED',borderWidth:2,pointRadius:4,pointBackgroundColor:'#7C3AED',yAxisID:'y1',order:1,tension:.3,spanGaps:false,dlFmt:v=>'₩'+(v/10000).toFixed(0)+'만',dlColor:'#7C3AED'}
+      {label:'리드 인입',data:s.map(function(d){return d.leads||0}),backgroundColor:'#2466FF88',borderRadius:4,yAxisID:'y',order:2,dlFmt:function(v){return v+'건'},dlColor:'#2466FF'},
+      {label:'CPL',data:s.map(function(d){return d.leads>0?d.cpl:null}),type:'line',borderColor:'#7C3AED',borderWidth:2,pointRadius:4,pointBackgroundColor:'#7C3AED',yAxisID:'y1',order:1,tension:.3,spanGaps:false,dlFmt:function(v){return '₩'+Math.round(v/10000)+'만'},dlColor:'#7C3AED'}
     ]},options:{responsive:true,interaction:{mode:'index',intersect:false},
       plugins:{dl:{display:show!==false},legend:{labels:{color:'#6B7280',font:{size:11}}}},
       scales:{y:{position:'left',title:{display:true,text:'리드(건)',color:'#2466FF',font:{size:10}},ticks:{color:'#2466FF',font:{size:10},stepSize:1},grid:{color:gridC},beginAtZero:true},
-        y1:{position:'right',title:{display:true,text:'CPL(₩)',color:'#7C3AED',font:{size:10}},ticks:{color:'#7C3AED',font:{size:10},callback:v=>'₩'+(v/10000).toFixed(0)+'만'},grid:{display:false}},
+        y1:{position:'right',title:{display:true,text:'CPL(₩)',color:'#7C3AED',font:{size:10}},ticks:{color:'#7C3AED',font:{size:10},callback:function(v){return '₩'+Math.round(v/10000)+'만'}},grid:{display:false}},
         x:{ticks:{color:tickC,font:{size:10},maxRotation:45}}}}});
   };
-  window.setTr=(m,el)=>{el.parentElement.querySelectorAll('.pbtn').forEach(e=>e.classList.remove('active'));el.classList.add('active');buildTr(m)};
+  window.setTr=function(m,el){el.parentElement.querySelectorAll('.pbtn').forEach(function(e){e.classList.remove('active')});el.classList.add('active');buildTr(m)};
   buildTr('weekly');
 
   // CPL chart
-  const awl=D.ad_summary.filter(a=>a.leads>0&&a.spend>0).sort((a,b)=>a.cpl-b.cpl);
-  if(awl.length)makeChart('cplChart',{type:'bar',data:{labels:awl.map(a=>(a===awl[0]?'★ ':'')+a.ad),datasets:[{
-    label:'CPL',data:awl.map(a=>a.cpl),
-    backgroundColor:awl.map(a=>a===awl[0]?'#05966655':a.cpl<100000?'#05966633':a.cpl<200000?'#D9770633':'#DC262633'),
-    borderColor:awl.map(a=>a===awl[0]?'#059669':a.cpl<100000?'#059669':a.cpl<200000?'#D97706':'#DC2626'),
-    borderWidth:1.5,borderRadius:4,dlFmt:function(v){const i=awl.findIndex(a=>a.cpl===v);return i>=0?awl[i].leads+'건':''},dlColor:'#111827'
-  }]},options:{indexAxis:'y',responsive:true,scales:{y:{ticks:{color:'#6B7280',font:{size:11}}},x:{position:'top',ticks:{callback:v=>'₩'+(v/10000).toFixed(0)+'만',color:tickC,font:{size:10}},grid:{color:gridC}}},plugins:{legend:{display:false}}}});
+  var awl=D.ad_summary.filter(function(a){return a.leads>0&&a.spend>0}).sort(function(a,b){return a.cpl-b.cpl});
+  if(awl.length)makeChart('cplChart',{type:'bar',data:{labels:awl.map(function(a){return (a===awl[0]?'★ ':'')+a.ad}),datasets:[{
+    label:'CPL',data:awl.map(function(a){return a.cpl}),
+    backgroundColor:awl.map(function(a){return a===awl[0]?'#05966655':a.cpl<100000?'#05966633':a.cpl<200000?'#D9770633':'#DC262633'}),
+    borderColor:awl.map(function(a){return a===awl[0]?'#059669':a.cpl<100000?'#059669':a.cpl<200000?'#D97706':'#DC2626'}),
+    borderWidth:1.5,borderRadius:4,dlFmt:function(v){var idx=-1;for(var j=0;j<awl.length;j++){if(awl[j].cpl===v){idx=j;break}}return idx>=0?awl[idx].leads+'건':''},dlColor:'#111827'
+  }]},options:{indexAxis:'y',responsive:true,scales:{y:{ticks:{color:'#6B7280',font:{size:11}}},x:{position:'top',ticks:{callback:function(v){return '₩'+Math.round(v/10000)+'만'},color:tickC,font:{size:10}},grid:{color:gridC}}},plugins:{legend:{display:false}}}});
 
   // CTR CPC
-  const ads=D.ad_summary.filter(a=>a.spend>0).sort((a,b)=>b.ctr-a.ctr).slice(0,12);
-  if(ads.length)makeChart('ctrCpcChart',{type:'bar',data:{labels:ads.map(a=>(a===ads[0]?'★ ':'')+a.ad),datasets:[
-    {label:'CTR(%)',data:ads.map(a=>a.ctr),backgroundColor:ads.map(a=>a===ads[0]?'#2466FF77':'#2466FF33'),borderColor:'#2466FF',borderWidth:1,borderRadius:4,yAxisID:'y',dlFmt:v=>v.toFixed(2)+'%',dlColor:'#2466FF'},
-    {label:'CPC(₩)',data:ads.map(a=>a.cpc),type:'line',borderColor:'#DC2626',borderWidth:2,pointRadius:3,pointBackgroundColor:'#DC2626',yAxisID:'y1',tension:.3,dlFmt:v=>'₩'+v.toLocaleString(),dlColor:'#DC2626'}
-  ]},options:{responsive:true,scales:{y:{position:'left',title:{display:true,text:'CTR(%)',color:'#2466FF',font:{size:10}},ticks:{callback:v=>v+'%',color:'#2466FF',font:{size:10}},grid:{color:gridC}},y1:{position:'right',title:{display:true,text:'CPC(₩)',color:'#DC2626',font:{size:10}},ticks:{callback:v=>'₩'+v.toLocaleString(),color:'#DC2626',font:{size:10}},grid:{display:false}},x:{ticks:{color:tickC,font:{size:10},maxRotation:45}}},plugins:{legend:{labels:{color:'#6B7280',font:{size:11}}}}}});
+  var ads=D.ad_summary.filter(function(a){return a.spend>0}).sort(function(a,b){return b.ctr-a.ctr}).slice(0,12);
+  if(ads.length)makeChart('ctrCpcChart',{type:'bar',data:{labels:ads.map(function(a){return (a===ads[0]?'★ ':'')+a.ad}),datasets:[
+    {label:'CTR(%)',data:ads.map(function(a){return a.ctr}),backgroundColor:ads.map(function(a){return a===ads[0]?'#2466FF77':'#2466FF33'}),borderColor:'#2466FF',borderWidth:1,borderRadius:4,yAxisID:'y',dlFmt:function(v){return v.toFixed(2)+'%'},dlColor:'#2466FF'},
+    {label:'CPC(₩)',data:ads.map(function(a){return a.cpc}),type:'line',borderColor:'#DC2626',borderWidth:2,pointRadius:3,pointBackgroundColor:'#DC2626',yAxisID:'y1',tension:.3,dlFmt:function(v){return '₩'+v.toLocaleString()},dlColor:'#DC2626'}
+  ]},options:{responsive:true,scales:{y:{position:'left',title:{display:true,text:'CTR(%)',color:'#2466FF',font:{size:10}},ticks:{callback:function(v){return v+'%'},color:'#2466FF',font:{size:10}},grid:{color:gridC}},y1:{position:'right',title:{display:true,text:'CPC(₩)',color:'#DC2626',font:{size:10}},ticks:{callback:function(v){return '₩'+v.toLocaleString()},color:'#DC2626',font:{size:10}},grid:{display:false}},x:{ticks:{color:tickC,font:{size:10},maxRotation:45}}},plugins:{legend:{labels:{color:'#6B7280',font:{size:11}}}}}});
 
   // Sortable table
-  let sortKey='spend',sortAsc=false;
-  const adData=D.ad_summary.filter(a=>a.spend>0);
-  const bestCpl=adData.filter(a=>a.leads>0).sort((a,b)=>a.cpl-b.cpl)[0]?.ad;
-  const bestCtr=[...adData].sort((a,b)=>b.ctr-a.ctr)[0]?.ad;
-  const bestLead=[...adData].sort((a,b)=>b.leads-a.leads)[0]?.ad;
+  var sortKey='spend',sortAsc=false;
+  var adData=D.ad_summary.filter(function(a){return a.spend>0});
+  var bestCpl=adData.filter(function(a){return a.leads>0}).sort(function(a,b){return a.cpl-b.cpl})[0];
+  var bestCtr=adData.slice().sort(function(a,b){return b.ctr-a.ctr})[0];
+  var bestLead=adData.slice().sort(function(a,b){return b.leads-a.leads})[0];
   function renderAT(){
-    const sorted=[...adData].sort((a,b)=>sortKey==='ad'?(sortAsc?a.ad.localeCompare(b.ad):b.ad.localeCompare(a.ad)):(sortAsc?(a[sortKey]||0)-(b[sortKey]||0):(b[sortKey]||0)-(a[sortKey]||0)));
-    document.getElementById('atb').innerHTML=sorted.map(a=>{
-      let b='';if(a.ad===bestCpl)b+='<span class="best-tag">CPL BEST</span>';if(a.ad===bestCtr)b+='<span class="best-tag" style="background:#EBF1FF;color:#2466FF">CTR BEST</span>';if(a.ad===bestLead)b+='<span class="best-tag" style="background:#FEF3C7;color:#D97706">리드 BEST</span>';
-      return '<tr><td class="text-l" style="font-weight:500;color:var(--text)">'+a.ad+b+'</td><td class="text-r">'+f(a.spend,'w')+'</td><td class="text-r">'+f(a.impressions)+'</td><td class="text-r">'+f(a.clicks)+'</td><td class="text-r">'+f(a.ctr,'p')+'</td><td class="text-r">'+f(a.cpc,'w')+'</td><td class="text-r hl">'+(a.leads||'-')+'</td><td class="text-r hl">'+(a.cpl?f(a.cpl,'w'):'-')+'</td></tr>'
-    }).join('');
-    document.querySelectorAll('#adTbl th').forEach(th=>{const k=th.dataset.key,base=th.textContent.replace(/ [↑↓]/g,'');th.textContent=base+(k===sortKey?(sortAsc?' ↑':' ↓'):'')});
+    var sorted=adData.slice().sort(function(a,b){if(sortKey==='ad')return sortAsc?a.ad.localeCompare(b.ad):b.ad.localeCompare(a.ad);return sortAsc?(a[sortKey]||0)-(b[sortKey]||0):(b[sortKey]||0)-(a[sortKey]||0)});
+    var h='';for(var j=0;j<sorted.length;j++){var a=sorted[j];var b='';if(bestCpl&&a.ad===bestCpl.ad)b+='<span class="best-tag">CPL BEST</span>';if(bestCtr&&a.ad===bestCtr.ad)b+='<span class="best-tag" style="background:#EBF1FF;color:#2466FF">CTR BEST</span>';if(bestLead&&a.ad===bestLead.ad)b+='<span class="best-tag" style="background:#FEF3C7;color:#D97706">리드 BEST</span>';h+='<tr><td class="text-l" style="font-weight:500;color:var(--text)">'+a.ad+b+'</td><td class="text-r">'+f(a.spend,'w')+'</td><td class="text-r">'+f(a.impressions)+'</td><td class="text-r">'+f(a.clicks)+'</td><td class="text-r">'+f(a.ctr,'p')+'</td><td class="text-r">'+f(a.cpc,'w')+'</td><td class="text-r hl">'+(a.leads||'-')+'</td><td class="text-r hl">'+(a.cpl?f(a.cpl,'w'):'-')+'</td></tr>'}
+    document.getElementById('atb').innerHTML=h;
+    document.querySelectorAll('#adTbl th').forEach(function(th){var k=th.dataset.key;var base=th.textContent.replace(/ [↑↓]/g,'');th.textContent=base+(k===sortKey?(sortAsc?' ↑':' ↓'):'')});
   }
-  document.querySelectorAll('#adTbl th').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.key;if(sortKey===k)sortAsc=!sortAsc;else{sortKey=k;sortAsc=false};renderAT()}));
+  document.querySelectorAll('#adTbl th').forEach(function(th){th.addEventListener('click',function(){var k=th.dataset.key;if(sortKey===k)sortAsc=!sortAsc;else{sortKey=k;sortAsc=false};renderAT()})});
   renderAT();
 
   // Scatter
-  const scAds=D.ad_summary.filter(a=>a.spend>0&&a.clicks>0);
-  if(scAds.length)makeChart('scChart',{type:'bubble',data:{datasets:scAds.map((a,i)=>({label:a.ad,data:[{x:a.cpl||0,y:a.ctr,r:Math.max((a.leads||0)*3+4,5)}],backgroundColor:C[i%C.length]+'55',borderColor:C[i%C.length],borderWidth:1.5}))},
-    options:{responsive:true,plugins:{dl:{display:false},legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.dataset.label+' | CPL:₩'+ctx.raw.x.toLocaleString()+' CTR:'+ctx.raw.y+'%'}}},
-      layout:{padding:30},
-      scales:{x:{title:{display:true,text:'← 효율적   CPL(₩)   비효율적 →',color:tickC},ticks:{callback:v=>'₩'+(v/10000).toFixed(0)+'만',color:tickC,font:{size:10}},grid:{color:gridC},grace:'20%'},
-        y:{title:{display:true,text:'CTR(%)',color:tickC},ticks:{callback:v=>v+'%',color:tickC,font:{size:10}},grid:{color:gridC},grace:'20%'}}}});
+  var scAds=D.ad_summary.filter(function(a){return a.spend>0&&a.clicks>0});
+  if(scAds.length)makeChart('scChart',{type:'bubble',data:{datasets:scAds.map(function(a,i){return {label:a.ad,data:[{x:a.cpl||0,y:a.ctr,r:Math.max((a.leads||0)*3+4,5)}],backgroundColor:C[i%C.length]+'55',borderColor:C[i%C.length],borderWidth:1.5}})},
+    options:{responsive:true,layout:{padding:30},plugins:{dl:{display:false},legend:{display:false},tooltip:{callbacks:{label:function(ctx){return ctx.dataset.label+' | CPL:₩'+ctx.raw.x.toLocaleString()+' CTR:'+ctx.raw.y+'%'}}}},
+      scales:{x:{title:{display:true,text:'← 효율적   CPL(₩)   비효율적 →',color:tickC},ticks:{callback:function(v){return '₩'+Math.round(v/10000)+'만'},color:tickC,font:{size:10}},grid:{color:gridC},grace:'20%'},
+        y:{title:{display:true,text:'CTR(%)',color:tickC},ticks:{callback:function(v){return v+'%'},color:tickC,font:{size:10}},grid:{color:gridC},grace:'20%'}}}});
 
-  // Campaign charts
+  // Campaign charts — 주차별 추이(캠페인별 라인)
+  var cwWeekLabels=D.weekly.map(function(w){return w.label});
   function campBar(id,key,fmt){
-    makeChart(id,{type:'bar',data:{labels:camps.map(c=>c.campaign),datasets:[{data:camps.map(c=>c[key]),backgroundColor:camps.map((_,i)=>campC[i%4]+'88'),borderColor:camps.map((_,i)=>campC[i%4]),borderWidth:1.5,borderRadius:6,dlFmt:fmt,dlColor:'#111827'}]},
-      options:{responsive:true,layout:{padding:{top:20}},plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>fmt(v),color:tickC},grid:{color:gridC},grace:'15%'},x:{ticks:{color:'#6B7280'}}}}});
+    var ds=camps.map(function(c,i){return {label:c.campaign,
+      data:D.weekly.map(function(w){
+        var o=(D.campaign_weekly&&D.campaign_weekly[c.campaign])?D.campaign_weekly[c.campaign][w.week]:null;
+        if(!o)return null;
+        if((key==='cpl'||key==='cpc')&&!o[key])return null; // 값 없는 주는 선 끊기
+        return o[key]||0;
+      }),
+      borderColor:campC[i%4],backgroundColor:campC[i%4]+'22',borderWidth:2,pointRadius:3,pointBackgroundColor:campC[i%4],tension:.3,fill:false,spanGaps:true}});
+    makeChart(id,{type:'line',data:{labels:cwWeekLabels,datasets:ds},
+      options:{responsive:true,layout:{padding:{top:10}},plugins:{dl:{display:false},legend:{labels:{color:'#6B7280',font:{size:11}}}},scales:{y:{ticks:{callback:function(v){return fmt(v)},color:tickC,font:{size:10}},grid:{color:gridC},grace:'15%'},x:{ticks:{color:'#6B7280',font:{size:10},maxRotation:45}}}}});
   }
-  campBar('campCtr','ctr',v=>v.toFixed(2)+'%');
-  campBar('campCpc','cpc',v=>'₩'+v.toLocaleString());
-  campBar('campLead','leads',v=>v+'건');
-  campBar('campCpl','cpl',v=>'₩'+(v/10000).toFixed(0)+'만');
+  campBar('campCtr','ctr',function(v){return v.toFixed(2)+'%'});
+  campBar('campCpc','cpc',function(v){return '₩'+v.toLocaleString()});
+  campBar('campLead','leads',function(v){return v+'건'});
+  campBar('campCpl','cpl',function(v){return '₩'+Math.round(v/10000)+'만'});
+
+  // Campaign custom
+  var campSelM2=['spend','leads'],campCuCh2;
+  function renderCampChips2(){document.getElementById('campChips2').innerHTML=['spend','impressions','clicks','leads','ctr','cpc','cpl'].map(function(k){return '<div class="chip'+(campSelM2.indexOf(k)>=0?' sel':'')+'" onclick="window._togCampM2(\''+k+'\')">'+MET[k].l+'</div>'}).join('')}
+  window._togCampM2=function(k){if(campSelM2.indexOf(k)>=0)campSelM2=campSelM2.filter(function(x){return x!==k});else{if(campSelM2.length>=2)campSelM2.shift();campSelM2.push(k)};renderCampChips2();buildCampCu2()};
+  function buildCampCu2(){
+    if(!campSelM2.length)return;if(campCuCh2)try{campCuCh2.destroy()}catch(e){}
+    var labels2=camps.map(function(c){return c.campaign});
+    var ds2=campSelM2.map(function(k,i){var m=MET[k];return {label:m.l,data:camps.map(function(c){return c[k]||0}),backgroundColor:camps.map(function(_,j){return campC[j%4]+(i===0?'88':'44')}),borderColor:camps.map(function(_,j){return campC[j%4]}),borderWidth:1.5,borderRadius:6,yAxisID:i===0?'y':'y1',dlFmt:m.f,dlColor:'#111827'}});
+    var m1=MET[campSelM2[0]],m2=campSelM2[1]?MET[campSelM2[1]]:null;
+    var sc2={y:{position:'left',title:{display:true,text:m1.l,color:m1.c,font:{size:10}},ticks:{callback:function(v){return m1.f(v)},color:m1.c,font:{size:10}},grid:{color:gridC},grace:'15%'},x:{ticks:{color:'#6B7280',font:{size:11}}}};
+    if(m2)sc2.y1={position:'right',title:{display:true,text:m2.l,color:m2.c,font:{size:10}},ticks:{callback:function(v){return m2.f(v)},color:m2.c,font:{size:10}},grid:{display:false},grace:'15%'};
+    campCuCh2=makeChart('campCuChart2',{type:'bar',data:{labels:labels2,datasets:ds2},options:{responsive:true,layout:{padding:{top:20}},plugins:{legend:{labels:{color:'#6B7280',font:{size:11}}}},scales:sc2}});
+  }
+  renderCampChips2();buildCampCu2();
+
+  // Campaign x Weekly 상세 테이블 (캠페인별 주간)
+  if(D.campaign_weekly){
+    var cw=D.campaign_weekly;
+    var cwWeeks=D.weekly.map(function(w){return {week:w.week,label:w.label}});
+    var cwGet=function(cn,wk){var o=cw[cn]&&cw[cn][wk];return o||{spend:0,impressions:0,clicks:0,reach:0,leads:0,ctr:0,cpc:0,cpl:0}};
+    var tH='';
+    for(var cwi=0;cwi<camps.length;cwi++){var cc=camps[cwi];
+      var rows='';
+      for(var wj=0;wj<cwWeeks.length;wj++){var w=cwWeeks[wj],o=cwGet(cc.campaign,w.week);
+        rows+='<tr><td class="text-l">'+w.label+'</td><td class="text-r">'+f(o.spend,'w')+'</td><td class="text-r">'+f(o.impressions)+'</td><td class="text-r">'+f(o.clicks)+'</td><td class="text-r">'+f(o.ctr,'p')+'</td><td class="text-r">'+f(o.cpc,'w')+'</td><td class="text-r hl">'+(o.leads||0)+'</td><td class="text-r hl">'+(o.cpl?f(o.cpl,'w'):'-')+'</td></tr>';}
+      tH+='<div class="cbox"><div class="ct"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:'+campC[cwi%4]+';margin-right:6px;vertical-align:middle"></span>'+cc.campaign+' · 주간</div><div style="overflow-x:auto"><table><thead><tr><th class="text-l">주차</th><th class="text-r">지출</th><th class="text-r">노출</th><th class="text-r">클릭</th><th class="text-r">CTR</th><th class="text-r">CPC</th><th class="text-r hl">리드</th><th class="text-r hl">CPL</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
+    }
+    document.getElementById('campWeekTables').innerHTML=tH;
+  }
 }
 
 function resetDashboard(){
@@ -593,4 +715,8 @@ function resetDashboard(){
   document.getElementById('xlsxStatus').innerHTML='';
   document.getElementById('campSelectArea').classList.add('hidden');
 }
+var DEFAULT_DATA={"totals": {"spend": 7726752, "impressions": 157343, "clicks": 2196, "leads": 64, "ctr": 1.4, "cpc": 3519, "cpl": 120730}, "ad_summary": [{"ad": "insight_02", "campaign_name": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 2813017, "impressions": 66208, "clicks": 988, "reach": 49629, "ctr": 1.49, "cpc": 2847, "leads": 9, "cpl": 312557}, {"ad": "01_goldbox_case", "campaign_name": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 1978234, "impressions": 37906, "clicks": 373, "reach": 32623, "ctr": 0.98, "cpc": 5304, "leads": 23, "cpl": 86010}, {"ad": "03_review", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 1326489, "impressions": 26771, "clicks": 423, "reach": 22225, "ctr": 1.58, "cpc": 3136, "leads": 13, "cpl": 102038}, {"ad": "03_review_video", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 466089, "impressions": 7839, "clicks": 137, "reach": 6791, "ctr": 1.75, "cpc": 3402, "leads": 6, "cpl": 77682}, {"ad": "05_keyword", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 418734, "impressions": 7792, "clicks": 109, "reach": 6245, "ctr": 1.4, "cpc": 3842, "leads": 6, "cpl": 69789}, {"ad": "04_goldbox", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 264118, "impressions": 3735, "clicks": 64, "reach": 3032, "ctr": 1.71, "cpc": 4127, "leads": 1, "cpl": 264118}, {"ad": "01_top_ranking_new", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 245646, "impressions": 3179, "clicks": 55, "reach": 2669, "ctr": 1.73, "cpc": 4466, "leads": 2, "cpl": 122823}, {"ad": "02_goldbox_interview", "campaign_name": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 145719, "impressions": 3102, "clicks": 36, "reach": 2806, "ctr": 1.16, "cpc": 4048, "leads": 1, "cpl": 145719}, {"ad": "02_1page", "campaign_name": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 68706, "impressions": 811, "clicks": 11, "reach": 666, "ctr": 1.36, "cpc": 6246, "leads": 0, "cpl": 0}], "daily": [{"date": "2026-06-03", "spend": 0, "impressions": 0, "clicks": 0, "reach": 0, "leads": 1, "ctr": 0, "cpc": 0, "cpl": 0}, {"date": "2026-06-04", "spend": 47586, "impressions": 946, "clicks": 12, "reach": 791, "leads": 1, "ctr": 1.27, "cpc": 3966, "cpl": 47586}, {"date": "2026-06-05", "spend": 176248, "impressions": 2807, "clicks": 26, "reach": 2176, "leads": 0, "ctr": 0.93, "cpc": 6779, "cpl": 0}, {"date": "2026-06-06", "spend": 202915, "impressions": 3657, "clicks": 35, "reach": 2792, "leads": 1, "ctr": 0.96, "cpc": 5798, "cpl": 202915}, {"date": "2026-06-07", "spend": 219441, "impressions": 4085, "clicks": 46, "reach": 3159, "leads": 2, "ctr": 1.13, "cpc": 4770, "cpl": 109720}, {"date": "2026-06-08", "spend": 206809, "impressions": 4790, "clicks": 51, "reach": 3729, "leads": 1, "ctr": 1.06, "cpc": 4055, "cpl": 206809}, {"date": "2026-06-09", "spend": 212898, "impressions": 4416, "clicks": 51, "reach": 3475, "leads": 2, "ctr": 1.15, "cpc": 4174, "cpl": 106449}, {"date": "2026-06-10", "spend": 210260, "impressions": 5609, "clicks": 54, "reach": 4443, "leads": 0, "ctr": 0.96, "cpc": 3894, "cpl": 0}, {"date": "2026-06-11", "spend": 250035, "impressions": 5112, "clicks": 50, "reach": 3955, "leads": 0, "ctr": 0.98, "cpc": 5001, "cpl": 0}, {"date": "2026-06-12", "spend": 251138, "impressions": 4688, "clicks": 65, "reach": 3888, "leads": 2, "ctr": 1.39, "cpc": 3864, "cpl": 125569}, {"date": "2026-06-13", "spend": 280945, "impressions": 5965, "clicks": 76, "reach": 4703, "leads": 3, "ctr": 1.27, "cpc": 3697, "cpl": 93648}, {"date": "2026-06-14", "spend": 370220, "impressions": 7032, "clicks": 96, "reach": 5740, "leads": 3, "ctr": 1.37, "cpc": 3856, "cpl": 123407}, {"date": "2026-06-15", "spend": 328754, "impressions": 6374, "clicks": 79, "reach": 5213, "leads": 2, "ctr": 1.24, "cpc": 4161, "cpl": 164377}, {"date": "2026-06-16", "spend": 298986, "impressions": 6642, "clicks": 87, "reach": 5505, "leads": 1, "ctr": 1.31, "cpc": 3437, "cpl": 298986}, {"date": "2026-06-17", "spend": 264099, "impressions": 5947, "clicks": 67, "reach": 4854, "leads": 1, "ctr": 1.13, "cpc": 3942, "cpl": 264099}, {"date": "2026-06-18", "spend": 284671, "impressions": 7679, "clicks": 70, "reach": 6343, "leads": 0, "ctr": 0.91, "cpc": 4067, "cpl": 0}, {"date": "2026-06-19", "spend": 262507, "impressions": 7142, "clicks": 82, "reach": 5658, "leads": 3, "ctr": 1.15, "cpc": 3201, "cpl": 87502}, {"date": "2026-06-20", "spend": 279274, "impressions": 6106, "clicks": 124, "reach": 4676, "leads": 1, "ctr": 2.03, "cpc": 2252, "cpl": 279274}, {"date": "2026-06-21", "spend": 371036, "impressions": 5867, "clicks": 142, "reach": 4691, "leads": 2, "ctr": 2.42, "cpc": 2613, "cpl": 185518}, {"date": "2026-06-22", "spend": 339081, "impressions": 6308, "clicks": 126, "reach": 4489, "leads": 1, "ctr": 2.0, "cpc": 2691, "cpl": 339081}, {"date": "2026-06-23", "spend": 308539, "impressions": 5389, "clicks": 66, "reach": 4502, "leads": 2, "ctr": 1.22, "cpc": 4675, "cpl": 154270}, {"date": "2026-06-24", "spend": 295165, "impressions": 6063, "clicks": 72, "reach": 5172, "leads": 7, "ctr": 1.19, "cpc": 4100, "cpl": 42166}, {"date": "2026-06-25", "spend": 258898, "impressions": 4984, "clicks": 54, "reach": 4223, "leads": 5, "ctr": 1.08, "cpc": 4794, "cpl": 51780}, {"date": "2026-06-26", "spend": 293851, "impressions": 4990, "clicks": 70, "reach": 4182, "leads": 3, "ctr": 1.4, "cpc": 4198, "cpl": 97950}, {"date": "2026-06-27", "spend": 225076, "impressions": 3963, "clicks": 78, "reach": 3345, "leads": 3, "ctr": 1.97, "cpc": 2886, "cpl": 75025}, {"date": "2026-06-28", "spend": 341335, "impressions": 7131, "clicks": 155, "reach": 5445, "leads": 3, "ctr": 2.17, "cpc": 2202, "cpl": 113778}, {"date": "2026-06-29", "spend": 311928, "impressions": 7321, "clicks": 124, "reach": 5844, "leads": 7, "ctr": 1.69, "cpc": 2516, "cpl": 44561}, {"date": "2026-06-30", "spend": 328244, "impressions": 6155, "clicks": 88, "reach": 5136, "leads": 3, "ctr": 1.43, "cpc": 3730, "cpl": 109415}, {"date": "2026-07-01", "spend": 305239, "impressions": 6261, "clicks": 106, "reach": 5264, "leads": 1, "ctr": 1.69, "cpc": 2880, "cpl": 305239}, {"date": "2026-07-02", "spend": 201574, "impressions": 3914, "clicks": 44, "reach": 3293, "leads": 3, "ctr": 1.12, "cpc": 4581, "cpl": 67191}], "weekly": [{"week": "2026-05-30", "label": "5/30~6/5", "spend": 223834, "impressions": 3753, "clicks": 38, "leads": 2, "reach": 2967, "ctr": 1.01, "cpc": 5890, "cpl": 111917}, {"week": "2026-06-06", "label": "6/6~6/12", "spend": 1553496, "impressions": 32357, "clicks": 352, "leads": 8, "reach": 25441, "ctr": 1.09, "cpc": 4413, "cpl": 194187}, {"week": "2026-06-13", "label": "6/13~6/19", "spend": 2090182, "impressions": 46781, "clicks": 557, "leads": 13, "reach": 38016, "ctr": 1.19, "cpc": 3753, "cpl": 160783}, {"week": "2026-06-20", "label": "6/20~6/26", "spend": 2145844, "impressions": 39707, "clicks": 654, "leads": 21, "reach": 31935, "ctr": 1.65, "cpc": 3281, "cpl": 102183}, {"week": "2026-06-27", "label": "6/27~7/3", "spend": 1713396, "impressions": 34745, "clicks": 595, "leads": 20, "reach": 28327, "ctr": 1.71, "cpc": 2880, "cpl": 85670}], "monthly": [{"month": "2026-06", "spend": 7726752, "impressions": 157343, "clicks": 2196, "leads": 64, "ctr": 1.4, "cpc": 3519, "cpl": 120730, "reach": 0}], "campaigns": [{"campaign": "성공사례", "spend": 4936970, "impressions": 107216, "clicks": 1397, "leads": 26, "ctr": 1.3, "cpc": 3534, "cpl": 189883}, {"campaign": "니즈파악", "spend": 2789782, "impressions": 50127, "clicks": 799, "leads": 38, "ctr": 1.59, "cpc": 3492, "cpl": 73415}], "campaign_weekly": {"성공사례": {"2026-06-13": {"spend": 1390737, "impressions": 32106, "clicks": 341, "reach": 25855, "leads": 8, "ctr": 1.06, "cpc": 4078, "cpl": 173842}, "2026-06-20": {"spend": 1423622, "impressions": 28298, "clicks": 476, "reach": 22215, "leads": 10, "ctr": 1.68, "cpc": 2991, "cpl": 142362}, "2026-06-27": {"spend": 1146910, "impressions": 24296, "clicks": 423, "reach": 19511, "leads": 7, "ctr": 1.74, "cpc": 2711, "cpl": 163844}, "2026-06-06": {"spend": 847440, "impressions": 20301, "clicks": 140, "reach": 15728, "leads": 1, "ctr": 0.69, "cpc": 6053, "cpl": 847440}, "2026-05-30": {"spend": 128261, "impressions": 2215, "clicks": 17, "reach": 1749, "leads": 0, "ctr": 0.77, "cpc": 7545, "cpl": 0}}, "니즈파악": {"2026-06-13": {"spend": 699445, "impressions": 14675, "clicks": 216, "reach": 12161, "leads": 5, "ctr": 1.47, "cpc": 3238, "cpl": 139889}, "2026-06-20": {"spend": 722222, "impressions": 11409, "clicks": 178, "reach": 9720, "leads": 11, "ctr": 1.56, "cpc": 4057, "cpl": 65657}, "2026-06-27": {"spend": 566486, "impressions": 10449, "clicks": 172, "reach": 8816, "leads": 13, "ctr": 1.65, "cpc": 3294, "cpl": 43576}, "2026-06-06": {"spend": 706056, "impressions": 12056, "clicks": 212, "reach": 9713, "leads": 7, "ctr": 1.76, "cpc": 3330, "cpl": 100865}, "2026-05-30": {"spend": 95573, "impressions": 1538, "clicks": 21, "reach": 1218, "leads": 2, "ctr": 1.37, "cpc": 4551, "cpl": 47786}}}, "wow": {"spend_pct": 2.7, "ctr_pp": 0.46, "cpc_won": -472, "leads_diff": 8}, "period": "2026-06-03 ~ 2026-07-02", "ad_daily_raw": [{"date": "2026-06-14", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 134185.0, "impressions": 2115, "clicks": 35, "ctr": 1.65484634, "cpc": 3833.85714286, "reach": 1666}, {"date": "2026-06-21", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 130372.0, "impressions": 2121, "clicks": 90, "ctr": 4.24328147, "cpc": 1448.57777778, "reach": 1422}, {"date": "2026-06-14", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 122087.0, "impressions": 2615, "clicks": 31, "ctr": 1.18546845, "cpc": 3938.29032258, "reach": 2136}, {"date": "2026-06-28", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 116871.0, "impressions": 1662, "clicks": 17, "ctr": 1.02286402, "cpc": 6874.76470588, "reach": 1436}, {"date": "2026-06-21", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 116761.0, "impressions": 1818, "clicks": 16, "ctr": 0.88008801, "cpc": 7297.5625, "reach": 1580}, {"date": "2026-06-28", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 115999.0, "impressions": 3368, "clicks": 101, "ctr": 2.99881235, "cpc": 1148.5049505, "reach": 2264}, {"date": "2026-06-11", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 115566.0, "impressions": 2462, "clicks": 17, "ctr": 0.69049553, "cpc": 6798.0, "reach": 1813}, {"date": "2026-06-15", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 111849.0, "impressions": 2145, "clicks": 17, "ctr": 0.79254079, "cpc": 6579.35294118, "reach": 1735}, {"date": "2026-06-22", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 111778.0, "impressions": 1512, "clicks": 20, "ctr": 1.32275132, "cpc": 5588.9, "reach": 1290}, {"date": "2026-07-01", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 108671.0, "impressions": 2323, "clicks": 51, "ctr": 2.19543693, "cpc": 2130.80392157, "reach": 1835}, {"date": "2026-06-07", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 108129.0, "impressions": 2474, "clicks": 12, "ctr": 0.48504446, "cpc": 9010.75, "reach": 1835}, {"date": "2026-06-30", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 107142.0, "impressions": 2016, "clicks": 15, "ctr": 0.74404762, "cpc": 7142.8, "reach": 1799}, {"date": "2026-06-30", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 106325.0, "impressions": 2072, "clicks": 48, "ctr": 2.31660232, "cpc": 2215.10416667, "reach": 1597}, {"date": "2026-06-24", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 104590.0, "impressions": 2737, "clicks": 30, "ctr": 1.09609061, "cpc": 3486.33333333, "reach": 2301}, {"date": "2026-06-26", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 104535.0, "impressions": 1324, "clicks": 19, "ctr": 1.43504532, "cpc": 5501.84210526, "reach": 1184}, {"date": "2026-06-15", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 104174.0, "impressions": 2155, "clicks": 23, "ctr": 1.06728538, "cpc": 4529.30434783, "reach": 1760}, {"date": "2026-06-22", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 103967.0, "impressions": 3193, "clicks": 80, "ctr": 2.50548074, "cpc": 1299.5875, "reach": 1850}, {"date": "2026-06-29", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 103293.0, "impressions": 3088, "clicks": 82, "ctr": 2.65544041, "cpc": 1259.67073171, "reach": 2167}, {"date": "2026-06-10", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 103123.0, "impressions": 3384, "clicks": 18, "ctr": 0.53191489, "cpc": 5729.05555556, "reach": 2674}, {"date": "2026-06-23", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 101501.0, "impressions": 2183, "clicks": 27, "ctr": 1.23683005, "cpc": 3759.2962963, "reach": 1791}, {"date": "2026-06-23", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 101318.0, "impressions": 1702, "clicks": 16, "ctr": 0.94007051, "cpc": 6332.375, "reach": 1470}, {"date": "2026-06-14", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 99649.0, "impressions": 2091, "clicks": 27, "ctr": 1.29124821, "cpc": 3690.7037037, "reach": 1765}, {"date": "2026-06-09", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 99120.0, "impressions": 2524, "clicks": 13, "ctr": 0.51505547, "cpc": 7624.61538462, "reach": 1980}, {"date": "2026-06-08", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 98755.0, "impressions": 3037, "clicks": 18, "ctr": 0.59269015, "cpc": 5486.38888889, "reach": 2320}, {"date": "2026-06-29", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 98611.0, "impressions": 2259, "clicks": 14, "ctr": 0.61974325, "cpc": 7043.64285714, "reach": 1972}, {"date": "2026-06-18", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 97880.0, "impressions": 2999, "clicks": 25, "ctr": 0.8336112, "cpc": 3915.2, "reach": 2633}, {"date": "2026-06-06", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 97864.0, "impressions": 2027, "clicks": 12, "ctr": 0.59200789, "cpc": 8155.33333333, "reach": 1464}, {"date": "2026-06-24", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 97155.0, "impressions": 1740, "clicks": 16, "ctr": 0.91954023, "cpc": 6072.1875, "reach": 1526}, {"date": "2026-06-18", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 96371.0, "impressions": 2781, "clicks": 21, "ctr": 0.75512406, "cpc": 4589.0952381, "reach": 2144}, {"date": "2026-06-16", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 95309.0, "impressions": 2007, "clicks": 23, "ctr": 1.14598904, "cpc": 4143.86956522, "reach": 1775}, {"date": "2026-06-15", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 93248.0, "impressions": 1889, "clicks": 35, "ctr": 1.85283219, "cpc": 2664.22857143, "reach": 1562}, {"date": "2026-06-16", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 92916.0, "impressions": 2210, "clicks": 30, "ctr": 1.35746606, "cpc": 3097.2, "reach": 1808}, {"date": "2026-06-13", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 91181.0, "impressions": 1945, "clicks": 20, "ctr": 1.02827763, "cpc": 4559.05, "reach": 1460}, {"date": "2026-06-26", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 90677.0, "impressions": 1975, "clicks": 30, "ctr": 1.51898734, "cpc": 3022.56666667, "reach": 1571}, {"date": "2026-06-16", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 90653.0, "impressions": 2169, "clicks": 26, "ctr": 1.19870908, "cpc": 3486.65384615, "reach": 1732}, {"date": "2026-06-20", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 90523.0, "impressions": 1519, "clicks": 18, "ctr": 1.18499013, "cpc": 5029.05555556, "reach": 1311}, {"date": "2026-06-20", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 89835.0, "impressions": 2760, "clicks": 79, "ctr": 2.86231884, "cpc": 1137.15189873, "reach": 1775}, {"date": "2026-06-25", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 89625.0, "impressions": 2163, "clicks": 20, "ctr": 0.9246417, "cpc": 4481.25, "reach": 1760}, {"date": "2026-06-19", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 89210.0, "impressions": 2640, "clicks": 40, "ctr": 1.51515152, "cpc": 2230.25, "reach": 1737}, {"date": "2026-06-19", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 88239.0, "impressions": 2351, "clicks": 13, "ctr": 0.55295619, "cpc": 6787.61538462, "reach": 2018}, {"date": "2026-06-21", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 87873.0, "impressions": 1471, "clicks": 25, "ctr": 1.69952413, "cpc": 3514.92, "reach": 1295}, {"date": "2026-06-13", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 87090.0, "impressions": 1960, "clicks": 21, "ctr": 1.07142857, "cpc": 4147.14285714, "reach": 1514}, {"date": "2026-06-17", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 85526.0, "impressions": 2064, "clicks": 18, "ctr": 0.87209302, "cpc": 4751.44444444, "reach": 1796}, {"date": "2026-06-12", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 82959.0, "impressions": 1342, "clicks": 14, "ctr": 1.04321908, "cpc": 5925.64285714, "reach": 1044}, {"date": "2026-07-01", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 82572.0, "impressions": 1543, "clicks": 12, "ctr": 0.77770577, "cpc": 6881.0, "reach": 1414}, {"date": "2026-06-17", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 81343.0, "impressions": 1874, "clicks": 21, "ctr": 1.12059765, "cpc": 3873.47619048, "reach": 1438}, {"date": "2026-06-22", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 81018.0, "impressions": 1110, "clicks": 15, "ctr": 1.35135135, "cpc": 5401.2, "reach": 925}, {"date": "2026-06-05", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 80675.0, "impressions": 1269, "clicks": 5, "ctr": 0.39401103, "cpc": 16135.0, "reach": 958}, {"date": "2026-06-13", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 80662.0, "impressions": 1765, "clicks": 32, "ctr": 1.81303116, "cpc": 2520.6875, "reach": 1462}, {"date": "2026-06-12", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 79654.0, "impressions": 1590, "clicks": 21, "ctr": 1.32075472, "cpc": 3793.04761905, "reach": 1330}, {"date": "2026-06-27", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 77399.0, "impressions": 1654, "clicks": 36, "ctr": 2.17654172, "cpc": 2149.97222222, "reach": 1331}, {"date": "2026-06-27", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 77068.0, "impressions": 1092, "clicks": 17, "ctr": 1.55677656, "cpc": 4533.41176471, "reach": 948}, {"date": "2026-06-25", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 74670.0, "impressions": 1246, "clicks": 11, "ctr": 0.88282504, "cpc": 6788.18181818, "reach": 1090}, {"date": "2026-06-28", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 74592.0, "impressions": 1341, "clicks": 30, "ctr": 2.23713647, "cpc": 2486.4, "reach": 1136}, {"date": "2026-06-10", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 73563.0, "impressions": 1689, "clicks": 25, "ctr": 1.48016578, "cpc": 2942.52, "reach": 1331}, {"date": "2026-06-29", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 73518.0, "impressions": 1202, "clicks": 19, "ctr": 1.58069884, "cpc": 3869.36842105, "reach": 1073}, {"date": "2026-06-26", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 73290.0, "impressions": 1283, "clicks": 16, "ctr": 1.24707716, "cpc": 4580.625, "reach": 1078}, {"date": "2026-06-09", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 71188.0, "impressions": 1235, "clicks": 26, "ctr": 2.10526316, "cpc": 2738.0, "reach": 961}, {"date": "2026-06-23", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 67766.0, "impressions": 998, "clicks": 17, "ctr": 1.70340681, "cpc": 3986.23529412, "reach": 798}, {"date": "2026-06-11", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 66890.0, "impressions": 1213, "clicks": 21, "ctr": 1.73124485, "cpc": 3185.23809524, "reach": 956}, {"date": "2026-06-20", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 64712.0, "impressions": 1364, "clicks": 20, "ctr": 1.46627566, "cpc": 3235.6, "reach": 1171}, {"date": "2026-06-30", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 63914.0, "impressions": 1022, "clicks": 10, "ctr": 0.97847358, "cpc": 6391.4, "reach": 925}, {"date": "2026-07-02", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 59931.0, "impressions": 1396, "clicks": 9, "ctr": 0.64469914, "cpc": 6659.0, "reach": 1098}, {"date": "2026-07-01", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 59450.0, "impressions": 1082, "clicks": 26, "ctr": 2.40295749, "cpc": 2286.53846154, "reach": 918}, {"date": "2026-06-12", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 56217.0, "impressions": 1187, "clicks": 17, "ctr": 1.43218197, "cpc": 3306.88235294, "reach": 1001}, {"date": "2026-06-19", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 53305.0, "impressions": 1610, "clicks": 24, "ctr": 1.49068323, "cpc": 2221.04166667, "reach": 1434}, {"date": "2026-06-17", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 51833.0, "impressions": 1197, "clicks": 17, "ctr": 1.42021721, "cpc": 3049.0, "reach": 1016}, {"date": "2026-06-24", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 50148.0, "impressions": 961, "clicks": 15, "ctr": 1.56087409, "cpc": 3343.2, "reach": 806}, {"date": "2026-06-05", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 49199.0, "impressions": 889, "clicks": 12, "ctr": 1.34983127, "cpc": 4099.91666667, "reach": 679}, {"date": "2026-06-27", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 49038.0, "impressions": 854, "clicks": 16, "ctr": 1.8735363, "cpc": 3064.875, "reach": 749}, {"date": "2026-06-04", "ad": "insight_02", "adset": "인사이트형", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 47586.0, "impressions": 946, "clicks": 12, "ctr": 1.26849894, "cpc": 3965.5, "reach": 791}, {"date": "2026-06-11", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 47431.0, "impressions": 1128, "clicks": 9, "ctr": 0.79787234, "cpc": 5270.11111111, "reach": 942}, {"date": "2026-06-18", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 47031.0, "impressions": 1183, "clicks": 15, "ctr": 1.26796281, "cpc": 3135.4, "reach": 1036}, {"date": "2026-06-08", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 45148.0, "impressions": 877, "clicks": 16, "ctr": 1.82440137, "cpc": 2821.75, "reach": 696}, {"date": "2026-06-07", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 43309.0, "impressions": 750, "clicks": 20, "ctr": 2.66666667, "cpc": 2165.45, "reach": 596}, {"date": "2026-06-25", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 41507.0, "impressions": 668, "clicks": 7, "ctr": 1.04790419, "cpc": 5929.57142857, "reach": 573}, {"date": "2026-06-30", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 39698.0, "impressions": 833, "clicks": 13, "ctr": 1.56062425, "cpc": 3053.69230769, "reach": 617}, {"date": "2026-06-07", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 39229.0, "impressions": 524, "clicks": 10, "ctr": 1.90839695, "cpc": 3922.9, "reach": 436}, {"date": "2026-06-06", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 38775.0, "impressions": 732, "clicks": 12, "ctr": 1.63934426, "cpc": 3231.25, "reach": 573}, {"date": "2026-07-02", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 38370.0, "impressions": 703, "clicks": 7, "ctr": 0.99573257, "cpc": 5481.42857143, "reach": 613}, {"date": "2026-06-18", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 36194.0, "impressions": 618, "clicks": 9, "ctr": 1.45631068, "cpc": 4021.55555556, "reach": 450}, {"date": "2026-07-01", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 35275.0, "impressions": 903, "clicks": 11, "ctr": 1.21816168, "cpc": 3206.81818182, "reach": 713}, {"date": "2026-06-22", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 33853.0, "impressions": 370, "clicks": 7, "ctr": 1.89189189, "cpc": 4836.14285714, "reach": 309}, {"date": "2026-06-29", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 32260.0, "impressions": 684, "clicks": 8, "ctr": 1.16959064, "cpc": 4032.5, "reach": 546}, {"date": "2026-07-02", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 31212.0, "impressions": 607, "clicks": 7, "ctr": 1.15321252, "cpc": 4458.85714286, "reach": 555}, {"date": "2026-06-06", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 30308.0, "impressions": 318, "clicks": 2, "ctr": 0.62893082, "cpc": 15154.0, "reach": 284}, {"date": "2026-06-28", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 29761.0, "impressions": 682, "clicks": 6, "ctr": 0.8797654, "cpc": 4960.16666667, "reach": 537}, {"date": "2026-06-08", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 29697.0, "impressions": 475, "clicks": 7, "ctr": 1.47368421, "cpc": 4242.42857143, "reach": 380}, {"date": "2026-06-23", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 29282.0, "impressions": 440, "clicks": 5, "ctr": 1.13636364, "cpc": 5856.4, "reach": 391}, {"date": "2026-06-21", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 28164.0, "impressions": 355, "clicks": 10, "ctr": 2.81690141, "cpc": 2816.4, "reach": 298}, {"date": "2026-07-02", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 26368.0, "impressions": 527, "clicks": 9, "ctr": 1.70777989, "cpc": 2929.77777778, "reach": 433}, {"date": "2026-06-24", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 26187.0, "impressions": 415, "clicks": 5, "ctr": 1.20481928, "cpc": 5237.4, "reach": 347}, {"date": "2026-06-09", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 25058.0, "impressions": 445, "clicks": 9, "ctr": 2.02247191, "cpc": 2784.22222222, "reach": 363}, {"date": "2026-06-17", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 24288.0, "impressions": 589, "clicks": 8, "ctr": 1.3582343, "cpc": 3036.0, "reach": 412}, {"date": "2026-07-02", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 22846.0, "impressions": 264, "clicks": 10, "ctr": 3.78787879, "cpc": 2284.6, "reach": 221}, {"date": "2026-06-25", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 21906.0, "impressions": 403, "clicks": 8, "ctr": 1.98511166, "cpc": 2738.25, "reach": 343}, {"date": "2026-06-05", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 21669.0, "impressions": 204, "clicks": 5, "ctr": 2.45098039, "cpc": 4333.8, "reach": 181}, {"date": "2026-06-10", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 21596.0, "impressions": 351, "clicks": 6, "ctr": 1.70940171, "cpc": 3599.33333333, "reach": 294}, {"date": "2026-06-08", "ad": "02_1page", "adset": "1page노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 20599.0, "impressions": 203, "clicks": 5, "ctr": 2.46305419, "cpc": 4119.8, "reach": 170}, {"date": "2026-07-02", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 19508.0, "impressions": 399, "clicks": 2, "ctr": 0.50125313, "cpc": 9754.0, "reach": 357}, {"date": "2026-06-06", "ad": "02_1page", "adset": "1page노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 18014.0, "impressions": 272, "clicks": 3, "ctr": 1.10294118, "cpc": 6004.66666667, "reach": 218}, {"date": "2026-06-06", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 17954.0, "impressions": 308, "clicks": 6, "ctr": 1.94805195, "cpc": 2992.33333333, "reach": 253}, {"date": "2026-06-07", "ad": "02_1page", "adset": "1page노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 17800.0, "impressions": 158, "clicks": 1, "ctr": 0.63291139, "cpc": 17800.0, "reach": 134}, {"date": "2026-06-09", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 17532.0, "impressions": 212, "clicks": 3, "ctr": 1.41509434, "cpc": 5844.0, "reach": 171}, {"date": "2026-06-19", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 16725.0, "impressions": 375, "clicks": 4, "ctr": 1.06666667, "cpc": 4181.25, "reach": 312}, {"date": "2026-06-16", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 16655.0, "impressions": 215, "clicks": 7, "ctr": 3.25581395, "cpc": 2379.28571429, "reach": 156}, {"date": "2026-06-20", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 16550.0, "impressions": 211, "clicks": 3, "ctr": 1.42180095, "cpc": 5516.66666667, "reach": 185}, {"date": "2026-06-17", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 15742.0, "impressions": 142, "clicks": 3, "ctr": 2.11267606, "cpc": 5247.33333333, "reach": 116}, {"date": "2026-06-15", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 15500.0, "impressions": 128, "clicks": 2, "ctr": 1.5625, "cpc": 7750.0, "reach": 106}, {"date": "2026-06-26", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 15084.0, "impressions": 310, "clicks": 4, "ctr": 1.29032258, "cpc": 3771.0, "reach": 260}, {"date": "2026-06-27", "ad": "05_keyword", "adset": "키워드 검색", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 13999.0, "impressions": 205, "clicks": 6, "ctr": 2.92682927, "cpc": 2333.16666667, "reach": 168}, {"date": "2026-06-12", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 13938.0, "impressions": 304, "clicks": 6, "ctr": 1.97368421, "cpc": 2323.0, "reach": 298}, {"date": "2026-06-25", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 13166.0, "impressions": 228, "clicks": 3, "ctr": 1.31578947, "cpc": 4388.66666667, "reach": 214}, {"date": "2026-06-08", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 12610.0, "impressions": 198, "clicks": 5, "ctr": 2.52525253, "cpc": 2522.0, "reach": 163}, {"date": "2026-06-05", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 12412.0, "impressions": 267, "clicks": 2, "ctr": 0.74906367, "cpc": 6206.0, "reach": 214}, {"date": "2026-06-05", "ad": "02_1page", "adset": "1page노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 12293.0, "impressions": 178, "clicks": 2, "ctr": 1.12359551, "cpc": 6146.5, "reach": 144}, {"date": "2026-06-10", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 11978.0, "impressions": 185, "clicks": 5, "ctr": 2.7027027, "cpc": 2395.6, "reach": 144}, {"date": "2026-07-01", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 11907.0, "impressions": 241, "clicks": 4, "ctr": 1.65975104, "cpc": 2976.75, "reach": 221}, {"date": "2026-06-07", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 10974.0, "impressions": 179, "clicks": 3, "ctr": 1.67597765, "cpc": 3658.0, "reach": 158}, {"date": "2026-06-11", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 10374.0, "impressions": 148, "clicks": 2, "ctr": 1.35135135, "cpc": 5187.0, "reach": 112}, {"date": "2026-06-12", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 9462.0, "impressions": 135, "clicks": 4, "ctr": 2.96296296, "cpc": 2365.5, "reach": 112}, {"date": "2026-06-12", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 8908.0, "impressions": 130, "clicks": 3, "ctr": 2.30769231, "cpc": 2969.33333333, "reach": 103}, {"date": "2026-06-11", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 8873.0, "impressions": 132, "clicks": 1, "ctr": 0.75757576, "cpc": 8873.0, "reach": 104}, {"date": "2026-06-13", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 8216.0, "impressions": 92, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 79}, {"date": "2026-06-20", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 8116.0, "impressions": 80, "clicks": 2, "ctr": 2.5, "cpc": 4058.0, "reach": 71}, {"date": "2026-06-24", "ad": "03_review_video", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 7934.0, "impressions": 123, "clicks": 3, "ctr": 2.43902439, "cpc": 2644.66666667, "reach": 118}, {"date": "2026-06-14", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 7918.0, "impressions": 131, "clicks": 2, "ctr": 1.52671756, "cpc": 3959.0, "reach": 105}, {"date": "2026-06-25", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 7897.0, "impressions": 107, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 86}, {"date": "2026-06-13", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 7191.0, "impressions": 62, "clicks": 1, "ctr": 1.61290323, "cpc": 7191.0, "reach": 54}, {"date": "2026-06-26", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 7068.0, "impressions": 43, "clicks": 1, "ctr": 2.3255814, "cpc": 7068.0, "reach": 37}, {"date": "2026-06-13", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 6605.0, "impressions": 141, "clicks": 2, "ctr": 1.41843972, "cpc": 3302.5, "reach": 134}, {"date": "2026-06-25", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 6523.0, "impressions": 122, "clicks": 3, "ctr": 2.45901639, "cpc": 2174.33333333, "reach": 117}, {"date": "2026-06-14", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 6381.0, "impressions": 80, "clicks": 1, "ctr": 1.25, "cpc": 6381.0, "reach": 68}, {"date": "2026-06-19", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 6176.0, "impressions": 38, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 35}, {"date": "2026-06-24", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 5582.0, "impressions": 54, "clicks": 2, "ctr": 3.7037037, "cpc": 2791.0, "reach": 43}, {"date": "2026-06-18", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 5425.0, "impressions": 72, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 60}, {"date": "2026-07-01", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 5405.0, "impressions": 133, "clicks": 2, "ctr": 1.5037594, "cpc": 2702.5, "reach": 129}, {"date": "2026-06-30", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 5361.0, "impressions": 124, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 117}, {"date": "2026-06-23", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 5183.0, "impressions": 40, "clicks": 1, "ctr": 2.5, "cpc": 5183.0, "reach": 32}, {"date": "2026-06-20", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 5128.0, "impressions": 111, "clicks": 1, "ctr": 0.9009009, "cpc": 5128.0, "reach": 108}, {"date": "2026-06-19", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 4793.0, "impressions": 50, "clicks": 1, "ctr": 2.0, "cpc": 4793.0, "reach": 50}, {"date": "2026-06-27", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 4451.0, "impressions": 67, "clicks": 1, "ctr": 1.49253731, "cpc": 4451.0, "reach": 60}, {"date": "2026-06-20", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 4410.0, "impressions": 61, "clicks": 1, "ctr": 1.63934426, "cpc": 4410.0, "reach": 55}, {"date": "2026-06-21", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 4336.0, "impressions": 65, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 62}, {"date": "2026-06-19", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 4059.0, "impressions": 78, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 72}, {"date": "2026-06-15", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3983.0, "impressions": 57, "clicks": 2, "ctr": 3.50877193, "cpc": 1991.5, "reach": 50}, {"date": "2026-06-30", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3920.0, "impressions": 46, "clicks": 1, "ctr": 2.17391304, "cpc": 3920.0, "reach": 42}, {"date": "2026-06-25", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3604.0, "impressions": 47, "clicks": 2, "ctr": 4.25531915, "cpc": 1802.0, "reach": 40}, {"date": "2026-06-29", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 3551.0, "impressions": 70, "clicks": 1, "ctr": 1.42857143, "cpc": 3551.0, "reach": 68}, {"date": "2026-06-21", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3530.0, "impressions": 37, "clicks": 1, "ctr": 2.7027027, "cpc": 3530.0, "reach": 34}, {"date": "2026-06-23", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3489.0, "impressions": 26, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 20}, {"date": "2026-06-16", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3453.0, "impressions": 41, "clicks": 1, "ctr": 2.43902439, "cpc": 3453.0, "reach": 34}, {"date": "2026-06-17", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3388.0, "impressions": 27, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 25}, {"date": "2026-07-02", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3167.0, "impressions": 16, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 15}, {"date": "2026-06-28", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 3097.0, "impressions": 61, "clicks": 1, "ctr": 1.63934426, "cpc": 3097.0, "reach": 58}, {"date": "2026-06-22", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 3086.0, "impressions": 54, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 53}, {"date": "2026-06-22", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 2746.0, "impressions": 51, "clicks": 3, "ctr": 5.88235294, "cpc": 915.33333333, "reach": 45}, {"date": "2026-06-22", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 2633.0, "impressions": 18, "clicks": 1, "ctr": 5.55555556, "cpc": 2633.0, "reach": 17}, {"date": "2026-06-27", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 2627.0, "impressions": 78, "clicks": 2, "ctr": 2.56410256, "cpc": 1313.5, "reach": 76}, {"date": "2026-06-26", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 2236.0, "impressions": 35, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 32}, {"date": "2026-06-24", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 1991.0, "impressions": 15, "clicks": 1, "ctr": 6.66666667, "cpc": 1991.0, "reach": 15}, {"date": "2026-06-17", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 1979.0, "impressions": 54, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 51}, {"date": "2026-06-30", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 1839.0, "impressions": 39, "clicks": 1, "ctr": 2.56410256, "cpc": 1839.0, "reach": 36}, {"date": "2026-07-01", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 1821.0, "impressions": 34, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 32}, {"date": "2026-06-18", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 1770.0, "impressions": 26, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 20}, {"date": "2026-06-24", "ad": "02_goldbox_interview", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 1578.0, "impressions": 18, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 16}, {"date": "2026-06-26", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 961.0, "impressions": 20, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 20}, {"date": "2026-06-11", "ad": "01_goldbox_case", "adset": "영상_0611", "campaign": "251030_B2B_확장셀_쿠팡 성공사례 모음 랜딩", "spend": 901.0, "impressions": 29, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 28}, {"date": "2026-06-28", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 788.0, "impressions": 15, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 13}, {"date": "2026-06-29", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 418.0, "impressions": 5, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 5}, {"date": "2026-06-29", "ad": "04_goldbox", "adset": "골드박스", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 277.0, "impressions": 13, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 13}, {"date": "2026-06-27", "ad": "03_review", "adset": "리뷰", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 253.0, "impressions": 5, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 5}, {"date": "2026-06-27", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 241.0, "impressions": 8, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 8}, {"date": "2026-06-28", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 227.0, "impressions": 2, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 1}, {"date": "2026-07-02", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 172.0, "impressions": 2, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 1}, {"date": "2026-07-01", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 138.0, "impressions": 2, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 2}, {"date": "2026-06-30", "ad": "01_top_ranking_new", "adset": "상위노출", "campaign": "251114_B2B_확장셀_쿠팡 B2B 고객 니즈 파악 2차 (재세팅)", "spend": 45.0, "impressions": 3, "clicks": 0, "ctr": 0, "cpc": 0, "reach": 3}], "leads_raw": [{"date": "2026-07-02", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-07-02", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-07-02", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-07-01", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-30", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-30", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-30", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-29", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-29", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-29", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-28", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-28", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-29", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-29", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-28", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-27", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-29", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-29", "ad": "02_goldbox_interview", "campaign": "성공사례"}, {"date": "2026-06-27", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-27", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-26", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-25", "ad": "03_review_video", "campaign": "니즈파악"}, {"date": "2026-06-25", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-26", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-26", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-23", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-22", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-25", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-24", "ad": "05_keyword", "campaign": "니즈파악"}, {"date": "2026-06-25", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-21", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-21", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-23", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-24", "ad": "01_top_ranking_new", "campaign": "니즈파악"}, {"date": "2026-06-20", "ad": "modal", "campaign": "성공사례"}, {"date": "2026-06-24", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-19", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-19", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-19", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-24", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-17", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-24", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-16", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-24", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-24", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-15", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-15", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-14", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-14", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-14", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-25", "ad": "main", "campaign": "성공사례"}, {"date": "2026-06-13", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-13", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-13", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-12", "ad": "01_goldbox_case", "campaign": "성공사례"}, {"date": "2026-06-12", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-09", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-09", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-08", "ad": "01_top_ranking_new", "campaign": "니즈파악"}, {"date": "2026-06-07", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-07", "ad": "03_review", "campaign": "니즈파악"}, {"date": "2026-06-06", "ad": "04_goldbox", "campaign": "니즈파악"}, {"date": "2026-06-04", "ad": "insight_02", "campaign": "니즈파악"}, {"date": "2026-06-03", "ad": "250427_논타겟_올영세일리포트_report-question-beauty_blogLP", "campaign": "니즈파악"}]};
+function loadDefaultData(){startDashboardWithData(DEFAULT_DATA)}
+
+window.addEventListener("load",function(){loadDefaultData()});
 </script></body></html>
